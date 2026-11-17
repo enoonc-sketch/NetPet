@@ -11,9 +11,9 @@ const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.quit();
 
 let pet = null, dash = null, tray = null;
-let settings = { alwaysOnTop: true, bounds: null, retentionDays: 7, skin: 'peach', memAlert: 85, monitoring: true, dnd: false };
+let settings = { alwaysOnTop: true, bounds: null, retentionDays: 7, skin: 'peach', memAlert: 85, monitoring: true, dnd: false, petStyle: '2d' };
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
-const loadSettings = () => { try { settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) }; } catch (_) {} };
+const loadSettings = () => { try { settings = { ...settings, ...JSON.parse(fs.readFileSync(settingsFile(), 'utf8')) }; } catch (_) {} if (!['2d', '3d'].includes(settings.petStyle)) settings.petStyle = '2d'; };
 const saveSettings = () => { try { fs.writeFileSync(settingsFile(), JSON.stringify(settings)); } catch (_) {} };
 const send = (w, ch, d) => { if (w && !w.isDestroyed()) w.webContents.send(ch, d); };
 const notify = (title, body) => {
@@ -42,7 +42,7 @@ function createPet() {
   if (settings.alwaysOnTop) pet.setAlwaysOnTop(true, 'screen-saver');
   pet.loadFile('index.html');
   pet.webContents.on('did-finish-load', () => {
-    send(pet, 'settings', { skin: settings.skin });
+    send(pet, 'settings', { skin: settings.skin, petStyle: settings.petStyle });
     send(pet, 'status', { monitoring: settings.monitoring });
   });
   pet.on('moved', () => { settings.bounds = pet.getBounds(); saveSettings(); });
@@ -101,13 +101,14 @@ function applySettings(p) {
   if (typeof p.alwaysOnTop === 'boolean') next.alwaysOnTop = p.alwaysOnTop;
   if (typeof p.monitoring === 'boolean') next.monitoring = p.monitoring;
   if (typeof p.dnd === 'boolean') next.dnd = p.dnd;
+  if (typeof p.petStyle === 'string' && ['2d', '3d'].includes(p.petStyle)) next.petStyle = p.petStyle;
   if (typeof p.skin === 'string' && ['peach', 'mint', 'lavender'].includes(p.skin)) next.skin = p.skin;
   if (typeof p.memAlert === 'number' && p.memAlert >= 80 && p.memAlert <= 95) next.memAlert = p.memAlert;
   if (typeof p.retentionDays === 'number' && [7, 30, 90].includes(p.retentionDays)) next.retentionDays = p.retentionDays;
   if (typeof p.autostart === 'boolean') app.setLoginItemSettings({ openAtLogin: p.autostart });
   settings = next;
   if ('alwaysOnTop' in p && pet) pet.setAlwaysOnTop(settings.alwaysOnTop, 'screen-saver');
-  if ('skin' in p) send(pet, 'settings', { skin: settings.skin });
+  if ('skin' in p || 'petStyle' in p) send(pet, 'settings', { skin: settings.skin, petStyle: settings.petStyle });
   if ('retentionDays' in p) store.prune(settings.retentionDays);
   if ('monitoring' in p) send(pet, 'status', { monitoring: settings.monitoring });
   saveSettings();
@@ -148,7 +149,7 @@ function setupIpc() {
   ipcMain.handle('get-settings', () => ({
     alwaysOnTop: settings.alwaysOnTop, retentionDays: settings.retentionDays,
     skin: settings.skin, memAlert: settings.memAlert,
-    monitoring: settings.monitoring, dnd: settings.dnd,
+    monitoring: settings.monitoring, dnd: settings.dnd, petStyle: settings.petStyle,
     autostart: app.getLoginItemSettings().openAtLogin,
     packaged: app.isPackaged, userData: app.getPath('userData')
   }));

@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="dashboard.css">
 </head>
 <body>
-<header><h1>NetPet <span class="ver">V0.1</span></h1>
+<header><h1>NetPet <span class="ver">V0.2</span></h1>
   <nav id="nav"><button data-t="ov" class="on">概览</button><button data-t="set">设置 / 隐私</button></nav>
 </header>
 <main>
@@ -18,7 +18,7 @@
   </div>
   <div class="card"><h2>最近 60 秒网速</h2><canvas id="chart"></canvas></div>
   <div class="card"><h2>流量统计（仅本机网卡合计）</h2><div id="traffic"></div>
-    <p class="mute">V0.1 不记录哪个程序联网、不记录访问目标，只统计网卡总流量。</p></div>
+    <p class="mute">V0.2 不记录哪个程序联网、不记录访问目标，只统计网卡总流量。</p></div>
   <div class="card"><h2>工具</h2>
     <div class="row"><button class="act" id="taskmgr">打开任务管理器</button>
     <span class="mute">想结束某个程序，请在任务管理器里自己操作，NetPet 不替你结束进程。</span></div></div>
@@ -30,6 +30,7 @@
     <div class="set"><span>开机自启<br><span class="mute" id="pkgnote"></span></span><input type="checkbox" id="s-auto"></div>
     <div class="set"><span>小宠物始终置顶</span><input type="checkbox" id="s-top"></div>
     <div class="set"><span>流量保留天数</span><select id="s-keep"><option>7</option><option>30</option><option>90</option></select></div>
+    <div class="set"><span>宠物形象<br><span class="mute">2D 扁平 / 3D 毛绒，可随时切换</span></span><span class="row" style="margin:0"><button class="act" id="ps-2d">2D 扁平</button><button class="act" id="ps-3d">3D 毛绒</button></span></div>
     <div class="set"><span>宠物毛色</span><span class="skins" id="skins"></span></div>
     <div class="set"><span>清空流量统计</span><button class="act" id="s-clear">清空</button></div>
   </div>
@@ -38,7 +39,7 @@
     <p>不监控：哪个程序联网、连了哪个网站或 IP、通信内容、键盘、屏幕、浏览器历史、文件。</p>
     <p>数据存在：<span id="datadir">—</span> 下的 <code>traffic.json</code>，只在本机，不上传任何服务器。</p>
     <p>不要管理员权限。停止方法：上面关掉监控开关，或托盘右键退出。删除方法：点“清空流量统计”，或直接删掉上面那个目录。</p>
-    <p>V0.1 没有的功能：结束进程、上网记录、系统体检、杀毒扫描——这些要到以后版本，且默认关闭、要你逐项打开才做。</p></div>
+    <p>V0.2 没有的功能：结束进程、上网记录、系统体检、杀毒扫描——这些要到以后版本，且默认关闭、要你逐项打开才做。</p></div>
 </section>
 </main>
 <script src="dashboard.js"></script>

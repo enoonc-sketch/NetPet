@@ -47,8 +47,11 @@ async function loadSet() {
   $('#s-keep').value = s.retentionDays;
   $('#pkgnote').textContent = s.packaged ? '' : '当前是开发模式，请用打包后的安装版开启自启';
   $('#datadir').textContent = s.userData || '';
+  $('#ps-2d').classList.toggle('on', s.petStyle !== '3d'); $('#ps-3d').classList.toggle('on', s.petStyle === '3d');
   $('#skins').innerHTML = Object.entries(SK).map(([k, c]) => '<button data-k="' + k + '" class="' + (k === s.skin ? 'on' : '') + '" style="background:' + c + '"></button>').join('');
 }
+$('#ps-2d').onclick = () => api('set-settings', { petStyle: '2d' }).then(loadSet);
+$('#ps-3d').onclick = () => api('set-settings', { petStyle: '3d' }).then(loadSet);
 $('#s-mon').onchange = (e) => api('set-settings', { monitoring: e.target.checked });
 $('#s-dnd').onchange = (e) => api('set-settings', { dnd: e.target.checked });
 $('#s-auto').onchange = (e) => api('set-settings', { autostart: e.target.checked });

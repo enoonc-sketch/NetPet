@@ -27,3 +27,7 @@ body { font-family:"Microsoft YaHei UI","PingFang SC",system-ui,sans-serif; }
 .pet.rush .tail { animation-duration:.3s; } .pet.sleep .tail { animation:none; }
 @keyframes wag { 0%,100% { transform:rotate(-8deg); } 50% { transform:rotate(14deg); } }
 @media (prefers-reduced-motion:reduce) { .pet, .tail, .zzz text { animation:none !important; } }
+
+.pet img { width:100%; height:100%; object-fit:contain; display:block; }
+.pet.mode-3d svg { display:none; }
+.pet.mode-3d { width:96px; height:96px; margin-left:-48px; bottom:0; }

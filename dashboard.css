@@ -22,3 +22,5 @@ button.act { cursor:pointer; } button.act:hover { background:var(--bg); }
 .skins button { width:30px; height:30px; border-radius:50%; border:3px solid transparent; cursor:pointer; margin-left:8px; }
 .skins button.on { border-color:var(--ink); }
 .mute { color:var(--mute); font-size:12px; }
+
+button.act.on { background:var(--peach); font-weight:700; }
