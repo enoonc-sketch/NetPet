@@ -22,7 +22,8 @@
       "target": "dmg",
       "icon": "assets/icon.png",
       "category": "public.app-category.utilities"
-    }
+    },
+    "publish": null
   },
   "dependencies": {
     "systeminformation": "^5.33.23"
@@ -36,9 +37,9 @@
   "name": "netpet",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win --mac",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac"
+    "dist": "electron-builder --win --mac --publish never",
+    "dist:win": "electron-builder --win --publish never",
+    "dist:mac": "electron-builder --mac --publish never"
   },
   "version": "0.2.0"
 }
