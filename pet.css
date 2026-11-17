@@ -1,0 +1,29 @@
+:root { --body:#FFC9A8; --ear:#FFB48A; --belly:#FFF1E3; --ink:#4A3B47; --down:#3FBF9B; --up:#8E76E8; }
+* { margin:0; padding:0; box-sizing:border-box; user-select:none; }
+html, body { width:100%; height:100%; background:transparent; overflow:hidden; }
+body { font-family:"Microsoft YaHei UI","PingFang SC",system-ui,sans-serif; }
+.bubble { position:absolute; top:6px; left:50%; transform:translateX(-50%); background:#fff; color:var(--ink);
+  padding:5px 10px; border-radius:14px; font-size:12px; font-weight:600; line-height:1.5; white-space:nowrap; box-shadow:0 2px 8px rgba(74,59,71,.18); }
+.bubble::after { content:""; position:absolute; bottom:-6px; left:50%; margin-left:-6px; border:6px solid transparent; border-bottom:0; border-top-color:#fff; }
+.d { color:var(--down); } .u { color:var(--up); }
+.pet { position:absolute; bottom:4px; left:50%; width:96px; height:84px; margin-left:-48px; transform-origin:50% 100%; cursor:grab; }
+.pet:active { cursor:grabbing; }
+.pet svg { width:100%; height:100%; overflow:visible; }
+.b { fill:var(--body); } .e { fill:var(--ear); } .belly { fill:var(--belly); }
+.tailp { stroke:var(--ear); }
+.eyes-open, .eyes-happy, .eyes-sleep, .zzz { display:none; }
+.pet.idle .eyes-open { display:block; }
+.pet.sleep .eyes-sleep, .pet.sleep .zzz { display:block; }
+.pet.happy .eyes-happy, .pet.rush .eyes-happy { display:block; }
+.pet.idle { animation:breathe 3.2s ease-in-out infinite; }
+.pet.sleep { animation:breathe 5s ease-in-out infinite; }
+.pet.happy { animation:hop 1.1s ease-in-out infinite; }
+.pet.rush { animation:hop .45s ease-in-out infinite; }
+@keyframes breathe { 0%,100% { transform:scale(1,1); } 50% { transform:scale(1.03,.97); } }
+@keyframes hop { 0%,100% { transform:translateY(0) scale(1.04,.94); } 50% { transform:translateY(-9px) scale(.97,1.04); } }
+.zzz text { animation:float 2.4s ease-in-out infinite; }
+@keyframes float { 0% { opacity:0; transform:translateY(6px); } 50% { opacity:1; } 100% { opacity:0; transform:translateY(-8px); } }
+.tail { transform-origin:82px 62px; animation:wag 1.6s ease-in-out infinite; }
+.pet.rush .tail { animation-duration:.3s; } .pet.sleep .tail { animation:none; }
+@keyframes wag { 0%,100% { transform:rotate(-8deg); } 50% { transform:rotate(14deg); } }
+@media (prefers-reduced-motion:reduce) { .pet, .tail, .zzz text { animation:none !important; } }

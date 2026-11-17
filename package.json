@@ -1,0 +1,44 @@
+{
+  "build": {
+    "appId": "com.netpet.app",
+    "files": [
+      "main.js",
+      "preload.js",
+      "store.js",
+      "index.html",
+      "pet.css",
+      "pet.js",
+      "dashboard.html",
+      "dashboard.css",
+      "dashboard.js",
+      "assets/**"
+    ],
+    "productName": "NetPet",
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.png",
+      "category": "public.app-category.utilities"
+    }
+  },
+  "dependencies": {
+    "systeminformation": "^5.33.23"
+  },
+  "description": "NetPet V0.1 - 会显示网速的桌面小宠物（Windows，仅聚合网速）",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "main": "main.js",
+  "name": "netpet",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --mac",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
+  },
+  "version": "0.1.0"
+}

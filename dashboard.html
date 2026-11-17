@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+<title>NetPet</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<header><h1>NetPet <span class="ver">V0.1</span></h1>
+  <nav id="nav"><button data-t="ov" class="on">概览</button><button data-t="set">设置 / 隐私</button></nav>
+</header>
+<main>
+<section id="ov" class="on">
+  <div class="grid g2">
+    <div class="card tile"><div class="l">下载</div><div class="v d" id="vrx">0 B/s</div></div>
+    <div class="card tile"><div class="l">上传</div><div class="v u" id="vtx">0 B/s</div></div>
+  </div>
+  <div class="card"><h2>最近 60 秒网速</h2><canvas id="chart"></canvas></div>
+  <div class="card"><h2>流量统计（仅本机网卡合计）</h2><div id="traffic"></div>
+    <p class="mute">V0.1 不记录哪个程序联网、不记录访问目标，只统计网卡总流量。</p></div>
+  <div class="card"><h2>工具</h2>
+    <div class="row"><button class="act" id="taskmgr">打开任务管理器</button>
+    <span class="mute">想结束某个程序，请在任务管理器里自己操作，NetPet 不替你结束进程。</span></div></div>
+</section>
+<section id="set">
+  <div class="card">
+    <div class="set"><span>监控开关<br><span class="mute">关掉后停止采样，宠物显示“已暂停监控”</span></span><input type="checkbox" id="s-mon"></div>
+    <div class="set"><span>勿扰模式<br><span class="mute">开启后不弹断网 / 恢复通知</span></span><input type="checkbox" id="s-dnd"></div>
+    <div class="set"><span>开机自启<br><span class="mute" id="pkgnote"></span></span><input type="checkbox" id="s-auto"></div>
+    <div class="set"><span>小宠物始终置顶</span><input type="checkbox" id="s-top"></div>
+    <div class="set"><span>流量保留天数</span><select id="s-keep"><option>7</option><option>30</option><option>90</option></select></div>
+    <div class="set"><span>宠物毛色</span><span class="skins" id="skins"></span></div>
+    <div class="set"><span>清空流量统计</span><button class="act" id="s-clear">清空</button></div>
+  </div>
+  <div class="card"><h2>隐私：NetPet 在监控什么</h2>
+    <p>只监控本机网卡的上传 / 下载速度合计，每秒一次，用来显示网速和统计今日 / 本月流量。</p>
+    <p>不监控：哪个程序联网、连了哪个网站或 IP、通信内容、键盘、屏幕、浏览器历史、文件。</p>
+    <p>数据存在：<span id="datadir">—</span> 下的 <code>traffic.json</code>，只在本机，不上传任何服务器。</p>
+    <p>不要管理员权限。停止方法：上面关掉监控开关，或托盘右键退出。删除方法：点“清空流量统计”，或直接删掉上面那个目录。</p>
+    <p>V0.1 没有的功能：结束进程、上网记录、系统体检、杀毒扫描——这些要到以后版本，且默认关闭、要你逐项打开才做。</p></div>
+</section>
+</main>
+<script src="dashboard.js"></script>
+</body>
+</html>
