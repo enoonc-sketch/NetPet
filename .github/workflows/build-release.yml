@@ -9,18 +9,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with: { node-version: 22 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
       - run: npm install
+      - name: Build native ETW module (procnet)
+        working-directory: native/procnet
+        run: npx --yes node-gyp rebuild --target=37.2.0 --dist-url=https://electronjs.org/headers
       - run: npm run dist:win
       - uses: actions/upload-artifact@v4
         with: { name: netpet-win, path: 'dist/*', if-no-files-found: error }
-  build-mac:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - run: npm install
-      - run: npm run dist:mac
-      - uses: actions/upload-artifact@v4
-        with: { name: netpet-mac, path: 'dist/*', if-no-files-found: error }
