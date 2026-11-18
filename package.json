@@ -1,45 +1,40 @@
 {
   "name": "netpet",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "NetPet - 桌面智能宠物：网速与电脑状态监控",
   "author": "NetPet",
-  "main": "main.js",
+  "main": "out/main.js",
   "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder --win --publish never",
-    "portable": "electron-builder --win portable",
-    "pack": "electron-builder --win dir",
-    "bundle": "esbuild src/pets3d.js --bundle --minify --format=iife --global-name=NetPet3D --outfile=pets.bundle.js",
-    "test": "node --no-warnings tests/unit.js",
-    "build:native": "cd native/procnet && npx node-gyp rebuild --target=37.2.0 --dist-url=https://electronjs.org/headers",
-    "dist:win": "electron-builder --win --publish never"
+    "build": "node build.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "node build.mjs --tests && node --no-warnings out/unit.cjs",
+    "dist": "npm run build && electron-builder --win nsis",
+    "portable": "npm run build && electron-builder --win portable",
+    "pack": "npm run build && electron-builder --win dir"
   },
   "dependencies": {
     "systeminformation": "^5.23.0"
   },
   "devDependencies": {
     "electron": "^37.2.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.10.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "three": "0.170.0",
+    "@types/three": "0.170.0"
   },
   "build": {
     "appId": "com.netpet.app",
     "productName": "NetPet",
     "forceCodeSigning": false,
     "files": [
-      "main.js",
-      "preload.js",
-      "db.js",
-      "petstate.js",
-      "security.js",
-      "fullscreen.js",
-      "petlist.js",
-      "index.html",
-      "panel.html",
-      "dashboard.html",
-      "pets.bundle.js",
-      "assets/**",
-      "procnet.js",
-      "native/procnet/build/Release/procnet.node"
+      "out/**"
     ],
     "win": {
       "icon": "assets/icon.ico",

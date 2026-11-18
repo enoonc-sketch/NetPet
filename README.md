@@ -1,10 +1,4 @@
-# NetPet 1.3.0
-
-## 1.3.0 改动
-- 按程序统计流量（ETW）：新增原生组件 `native/procnet`，启动 ETW 内核会话，按进程累计 TCP/UDP 字节数，完整窗口 → 网络统计 → B 区实时排行。默认关闭，需要管理员权限；不开就不启动、不提权。
-- 编译原生组件（仅 Windows）：先跑 `native\procnet\build.bat`，再跑根目录 `build.bat` 打安装包。未编译时 B 区会如实显示“原生组件不可用”，不会编数据。
-- 本版仅发 Windows 安装包：ETW 是 Windows 专属，Mac 配置已移除，CI 只打 Win。
-- 宠物窗口 80×80（1.2.2）：速度气泡移出宠物窗口，网速改在托盘悬停提示、单击小面板、完整窗口里看。
+# NetPet 1.3.1
 
 Windows 桌面智能宠物：用 3D 小宠物显示网速和电脑状态。**本地运行、本地存储，不上传任何数据。**
 
@@ -13,6 +7,7 @@ Windows 桌面智能宠物：用 3D 小宠物显示网速和电脑状态。**本
 双击 build.bat        （一键安装依赖并打包；网络慢用 build-cn.bat）
 npm install && npm start   （开发运行）
 npm test                    （状态机与数据库单元测试）
+npm run typecheck           （TypeScript 类型检查）
 ```
 详细文档见 `docs/`：使用说明、技术架构、测试报告（含尚未在 Windows 实测的部分）。
 
@@ -22,5 +17,5 @@ npm test                    （状态机与数据库单元测试）
 所有造型都是代码用基础几何体搭出来的，不需要模型文件，也不联网。如果显卡不支持 WebGL，会自动退回 2D 小猫。
 
 ### 改造型 / 加新宠物（可选）
-1. `petlist.js` 加一行；`src/pets3d.js` 的 `SPEC` 里加一份造型参数
-2. `npm i --no-save three esbuild`，再运行 `npm run bundle` 重新生成 `pets.bundle.js`
+1. `src/shared/petlist.ts` 加一行；`src/renderer/pets3d.ts` 的 `SPEC` 里加一份造型参数
+2. 运行 `npm run build`（3D 宠物代码会一起打包）

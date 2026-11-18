@@ -1,0 +1,20 @@
+:root { --ink:#4A3B47; --down:#3FBF9B; --up:#8E76E8; }
+* { margin:0; padding:0; box-sizing:border-box; user-select:none; }
+html, body, #root { width:100%; height:100%; background:transparent; overflow:hidden; }
+body { font-family:"Microsoft YaHei UI","PingFang SC",system-ui,sans-serif; }
+.stage { position:relative; width:100%; height:100%; }
+.bubble { position:absolute; top:6px; left:50%; transform:translateX(-50%); background:#fff; color:var(--ink); padding:5px 10px; border-radius:14px; font-size:12px; font-weight:600; line-height:1.5; white-space:nowrap; box-shadow:0 2px 8px rgba(74,59,71,.18); }
+.bubble::after { content:""; position:absolute; bottom:-6px; left:50%; margin-left:-6px; border:6px solid transparent; border-bottom:0; border-top-color:#fff; }
+.d { color:var(--down); } .u { color:var(--up); }
+.chip { margin-top:2px; font-size:10px; font-weight:600; color:#8C7F8A; text-align:center; }
+.c3d { position:absolute; bottom:2px; left:50%; transform:translateX(-50%); cursor:grab; display:block; } .c3d.off { display:none; }
+.c3d:active, .emoji:active { cursor:grabbing; }
+.emoji { position:absolute; bottom:6px; left:50%; transform:translateX(-50%); font-size:72px; line-height:1; cursor:grab; }
+.emoji.sleep { animation:breathe 5s ease-in-out infinite; opacity:.8; } .emoji.idle { animation:breathe 3.2s ease-in-out infinite; } .emoji.happy { animation:hop 1.1s ease-in-out infinite; } .emoji.tired { filter:saturate(.5); }
+.emoji.hot::after { content:"💧"; font-size:20px; position:absolute; right:-12px; top:0; } .emoji.risk::before { content:"⚠️"; font-size:22px; position:absolute; left:-16px; top:0; }
+@keyframes breathe { 0%,100% { transform:translateX(-50%) scale(1,1); } 50% { transform:translateX(-50%) scale(1.03,.97); } }
+@keyframes hop { 0%,100% { transform:translateX(-50%) translateY(0); } 50% { transform:translateX(-50%) translateY(-9px); } }
+.compact .bubble { top:2px; padding:1px 6px; font-size:9px; line-height:1.4; border-radius:9px; font-weight:700; }
+.compact .bubble::after { bottom:-4px; margin-left:-4px; border-width:4px; border-bottom:0; }
+.compact .emoji { font-size:46px; }
+@media (prefers-reduced-motion:reduce) { .emoji { animation:none !important; } }
