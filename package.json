@@ -1,45 +1,74 @@
 {
+  "name": "netpet",
+  "version": "1.3.0",
+  "description": "NetPet - 桌面智能宠物：网速与电脑状态监控",
+  "author": "NetPet",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --publish never",
+    "portable": "electron-builder --win portable",
+    "pack": "electron-builder --win dir",
+    "bundle": "esbuild src/pets3d.js --bundle --minify --format=iife --global-name=NetPet3D --outfile=pets.bundle.js",
+    "test": "node --no-warnings tests/unit.js",
+    "build:native": "cd native/procnet && npx node-gyp rebuild --target=37.2.0 --dist-url=https://electronjs.org/headers",
+    "dist:win": "electron-builder --win --publish never"
+  },
+  "dependencies": {
+    "systeminformation": "^5.23.0"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^25.1.8"
+  },
   "build": {
     "appId": "com.netpet.app",
+    "productName": "NetPet",
+    "forceCodeSigning": false,
     "files": [
       "main.js",
       "preload.js",
-      "store.js",
+      "db.js",
+      "petstate.js",
+      "security.js",
+      "fullscreen.js",
+      "petlist.js",
       "index.html",
-      "pet.css",
-      "pet.js",
+      "panel.html",
       "dashboard.html",
-      "dashboard.css",
-      "dashboard.js",
-      "assets/**"
+      "pets.bundle.js",
+      "assets/**",
+      "procnet.js",
+      "native/procnet/build/Release/procnet.node"
     ],
-    "productName": "NetPet",
     "win": {
-      "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     },
-    "mac": {
-      "target": "dmg",
-      "icon": "assets/icon.png",
-      "category": "public.app-category.utilities"
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "NetPet",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "language": "2052",
+      "include": "build/installer.nsh",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
     },
-    "publish": null
-  },
-  "dependencies": {
-    "systeminformation": "^5.33.23"
-  },
-  "description": "NetPet V0.1 - 会显示网速的桌面小宠物（Windows，仅聚合网速）",
-  "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^25.0.0"
-  },
-  "main": "main.js",
-  "name": "netpet",
-  "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder --win --mac --publish never",
-    "dist:win": "electron-builder --win --publish never",
-    "dist:mac": "electron-builder --mac --publish never"
-  },
-  "version": "0.2.0"
+    "portable": {
+      "artifactName": "NetPet-portable.exe"
+    }
+  }
 }
