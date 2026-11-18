@@ -2,6 +2,15 @@
 
 Windows 桌面智能宠物：用 3D 小宠物显示网速和电脑状态。**本地运行、本地存储，不上传任何数据。**
 
+## 界面截图
+
+![概览](https://github.com/enoonc-sketch/NetPet/releases/download/v1.3.1/netpet-1.3.1-overview.png)
+![网络统计](https://github.com/enoonc-sketch/NetPet/releases/download/v1.3.1/netpet-1.3.1-network.png)
+![系统健康](https://github.com/enoonc-sketch/NetPet/releases/download/v1.3.1/netpet-1.3.1-health.png)
+![宠物](https://github.com/enoonc-sketch/NetPet/releases/download/v1.3.1/netpet-1.3.1-pets.png)
+![隐私](https://github.com/enoonc-sketch/NetPet/releases/download/v1.3.1/netpet-1.3.1-privacy.png)
+![设置](https://github.com/enoonc-sketch/NetPet/releases/download/v1.3.1/netpet-1.3.1-settings.png)
+
 ## 运行 / 打包
 ```
 双击 build.bat        （一键安装依赖并打包；网络慢用 build-cn.bat）
