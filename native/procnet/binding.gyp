@@ -1,0 +1,1 @@
+{"targets":[{"conditions":[["OS=='win'",{"libraries":["advapi32.lib","tdh.lib","psapi.lib"],"msvs_settings":{"VCCLCompilerTool":{"AdditionalOptions":["/std:c++17"],"ExceptionHandling":1}}}]],"sources":["procnet.cpp"],"target_name":"procnet"}]}
