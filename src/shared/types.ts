@@ -8,6 +8,9 @@ export interface SettingsView {
   privacy: Record<string, boolean>; anim: Record<string, boolean>; alwaysOnTop: boolean; retentionDays: number; memAlert: number;
   pet: string; compact: boolean; safe: boolean; autostart: boolean; hasLock: boolean; packaged: boolean; onboarded: boolean; version: string; dataDir: string;
 }
+export interface PetStatus { userHidden: boolean; fsHidden: boolean; fullscreenHide: boolean; bounds: { x: number; y: number; width: number; height: number } | null; visible: boolean }
+export interface JunkScan { id: string; name: string; desc: string; size: number; files: number; skipped: string[] }
+export interface JunkClean { id: string; freed: number; deletedFiles: number; skippedFiles: number; dirsRemoved: number; ok: boolean; error?: string }
 export type HealthStatus = 'ok' | 'warn' | 'bad' | 'unknown';
 export interface HealthItem { id: string; title: string; status: HealthStatus; detail: string; evidence: string; advice: string; list?: string[] }
 export interface HealthReport { items: HealthItem[]; score: number | null; at: number; disabled?: boolean }

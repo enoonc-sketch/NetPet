@@ -2,9 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { Chart, NAME, Off, fmt, inv, sz, useLoad } from './common';
 import { thumbnails } from '../pets3d';
 import { PETS } from '../../shared/petlist';
-import type { HealthReport, PState, Runtime, Sample, SettingsView, Speed } from '../../shared/types';
+import type { HealthReport, JunkClean, JunkScan, PetStatus, PState, Runtime, Sample, SettingsView, Speed } from '../../shared/types';
 
-const TABS: [string, string][] = [['ov', '概览'], ['net', '网络统计'], ['hl', '系统健康'], ['pt', '宠物'], ['pri', '隐私'], ['set', '设置']];
+const TABS: [string, string][] = [['ov', '概览'], ['net', '网络统计'], ['hl', '系统健康'], ['pt', '宠物'], ['pri', '隐私'], ['clean', '系统清理'], ['set', '设置']];
 type Go = (t: string) => void;
 
 export function App() {
@@ -49,6 +49,7 @@ export function App() {
         {tab === 'hl' && <Health go={go} />}
         {tab === 'pt' && <Pets cfg={cfg} reload={reloadCfg} />}
         {tab === 'pri' && <Privacy cfg={cfg} reload={reloadCfg} />}
+        {tab === 'clean' && <Clean />}
         {tab === 'set' && <Settings cfg={cfg} rt={rt} reload={reloadCfg} />}
       </main>
     </>
@@ -240,12 +241,62 @@ function Privacy({ cfg, reload }: { cfg: SettingsView | null; reload: () => void
   );
 }
 
+/* ---------------- 系统清理 ---------------- */
+function Clean() {
+  const [scan, setScan] = useState<JunkScan[] | null>(null);
+  const [sel, setSel] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [res, setRes] = useState<JunkClean[] | null>(null);
+  const [msg, setMsg] = useState('');
+  const doScan = async () => {
+    setBusy(true); setRes(null); setMsg('');
+    try { const r = await inv<JunkScan[]>('scan-junk'); setScan(r); setSel(r.filter((x) => x.id !== 'recycle-bin' && x.size > 0).map((x) => x.id)); }
+    catch { setMsg('扫描失败，请重试。'); }
+    setBusy(false);
+  };
+  useEffect(() => { doScan(); }, []);
+  const total = (scan || []).filter((x) => sel.includes(x.id)).reduce((a, x) => a + x.size, 0);
+  const clean = async () => {
+    if (!sel.length) return alert('请先勾选要清理的类别。');
+    const names = (scan || []).filter((x) => sel.includes(x.id)).map((x) => x.name).join('、');
+    if (!confirm(`确定清理以下内容吗？\n${names}\n预计释放约 ${sz(total)}。\n${sel.includes('recycle-bin') ? '注意：回收站清空后不可恢复。\n' : ''}正在使用的文件会自动跳过，不会强行删除。`)) return;
+    setCleaning(true); setRes(null);
+    try { const r = await inv<JunkClean[]>('clean-junk', { ids: sel }); setRes(r); await doScan(); }
+    catch { setMsg('清理失败，请重试。'); }
+    setCleaning(false);
+  };
+  return (
+    <section className="on">
+      <div className="card"><h2>系统垃圾清理</h2>
+        <p className="mute">先扫描、再勾选、最后确认才删除。只清理白名单里的临时文件、浏览器缓存、崩溃转储和回收站；<b>绝不碰文档、下载、桌面、图片和程序文件</b>，也不动 Windows Update 下载和 Prefetch。浏览器开着时，被占用的缓存文件会跳过，想清干净请先关浏览器。</p>
+        <div className="row"><button className="act pri" disabled={busy || cleaning} onClick={doScan}>{busy ? '扫描中…' : '重新扫描'}</button>
+          <button className="act danger" disabled={!sel.length || cleaning} onClick={clean}>{cleaning ? '清理中…' : `清理已选（约 ${sz(total)}）`}</button>
+          <span className="mute">{msg}</span></div></div>
+      {res && <div className="card"><h2>清理结果</h2>
+        {res.map((r) => <div key={r.id}>{r.ok ? `✓ ${r.id}：释放 ${sz(r.freed)}，删除 ${r.deletedFiles} 个文件，跳过 ${r.skippedFiles} 个（正在使用或无权限）` : `✗ ${r.id}：${r.error || '失败'}`}</div>)}
+        <div className="mute" style={{ marginTop: 6 }}>合计释放 {sz(res.reduce((a, r) => a + r.freed, 0))}。回收站清理不计入释放大小（清空即完成）。</div></div>}
+      <div className="card"><table><thead><tr><th></th><th>类别</th><th>大小</th><th>文件数</th><th>说明</th></tr></thead>
+        <tbody>{(scan || []).map((x) => <tr key={x.id}>
+          <td><input type="checkbox" checked={sel.includes(x.id)} onChange={(e) => setSel((o) => e.target.checked ? [...o, x.id] : o.filter((y) => y !== x.id))} /></td>
+          <td>{x.name}</td><td>{sz(x.size)}</td><td>{x.files}</td>
+          <td className="mute">{x.desc}{x.skipped.length ? <><br />{x.skipped.join('；')}</> : null}</td></tr>)}
+        {(!scan || !scan.length) && <tr><td colSpan={5} className="mute">{busy ? '正在扫描…' : '暂无数据'}</td></tr>}</tbody></table></div>
+    </section>
+  );
+}
+
 /* ---------------- 设置 ---------------- */
 function Settings({ cfg, rt, reload }: { cfg: SettingsView | null; rt: Runtime; reload: () => void }) {
+  const [st, reloadSt] = useLoad<PetStatus>(() => inv('get-pet-status'), []);
   if (!cfg) return null;
   const set = async (p: unknown) => { await inv('set-settings', p); reload(); };
   return (
     <section className="on">
+      <div className="card"><h2>小宠物不见了？一键复位</h2>
+        <p className="mute">复位只做四件事：位置回主显示器右下角、恢复显示、取消鼠标穿透、恢复置顶。不动宠物种类、隐私开关、监控数据和成长经验。{st ? (st.visible ? '当前状态：宠物正在显示。' : st.userHidden ? '当前状态：宠物被手动隐藏了（可能是不小心点了托盘图标）。' : st.fsHidden ? '当前状态：全屏应用正在运行，“全屏时自动隐藏”把它藏起来了，退出全屏就回来。' : '当前状态：宠物不在屏幕上，可能是位置跑出屏幕或渲染失败。') : ''}</p>
+        <div className="row"><button className="act pri" onClick={async () => { await inv('reset-pet'); reloadSt(); }}>一键复位小宠物</button>
+          <span className="mute">也可以右键小宠物 / 右键托盘图标 → 一键复位小宠物。</span></div></div>
       <div className="card">
         <div className="set"><span>紧凑模式<br /><span className="mute">把宠物窗口缩小到约 96×100，气泡改为一行小字</span></span><input type="checkbox" checked={cfg.compact} onChange={(e) => set({ compact: e.target.checked })} /></div>
         <div className="set"><span>小宠物始终置顶</span><input type="checkbox" checked={cfg.alwaysOnTop} onChange={(e) => set({ alwaysOnTop: e.target.checked })} /></div>

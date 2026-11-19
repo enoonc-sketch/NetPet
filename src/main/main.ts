@@ -11,6 +11,8 @@ import { initLog, log } from './logger';
 import * as db from './db';
 import * as security from './security';
 import * as fullscreen from './fullscreen';
+import * as cleaner from './cleaner';
+import { clampPetBounds, defaultPetBounds, petSize } from './petgeom';
 import { PetStateMachine } from './petstate';
 import { PETS } from '../shared/petlist';
 
@@ -45,9 +47,24 @@ const si: any = {
   currentLoad: () => collect('currentLoad', 6000), cpuTemperature: () => collect('cpuTemperature', 10000), fsSize: () => collect('fsSize', 10000),
   graphics: () => collect('graphics', 20000), battery: () => collect('battery', 8000), processes: () => collect('processes', 15000)
 };
+let petRecreateTimer: any = null, petRecreateN = 0, quitting = false;
+function schedulePetRecreate(reason: string) {
+  // 旧版只记日志不重建：3D/WebGL 渲染进程一崩，透明窗口就剩一个空白框，看起来就是宠物“没了”。
+  if (quitting || petRecreateTimer) return;
+  if (petRecreateN >= 3) { log(`宠物渲染进程多次崩溃(${reason})，已停止自动重建，请用托盘菜单“一键复位小宠物”`); notify('小宠物渲染失败', '宠物窗口多次崩溃已停止自动重建，请右键托盘图标 → 一键复位小宠物。'); return; }
+  petRecreateTimer = setTimeout(() => {
+    petRecreateTimer = null; petRecreateN++;
+    log(`重建宠物窗口(${reason})，第 ${petRecreateN} 次`);
+    try { if (pet && !pet.isDestroyed()) pet.destroy(); } catch (_) {}
+    pet = null; createPet(); syncVisibility();
+  }, 1500);
+}
 function watch(name: string, w: BrowserWindow) {
   w.on('unresponsive', () => log(`${name}窗口无响应`)); w.on('responsive', () => log(`${name}窗口恢复响应`));
-  w.webContents.on('render-process-gone', (_e, d) => log(`${name}渲染进程退出 reason=${d.reason} code=${d.exitCode}`));
+  w.webContents.on('render-process-gone', (_e, d) => {
+    log(`${name}渲染进程退出 reason=${d.reason} code=${d.exitCode}`);
+    if (name === '宠物') schedulePetRecreate(String(d.reason || 'gone'));
+  });
 }
 
 /* ---------- 设置 ---------- */
@@ -59,7 +76,7 @@ const DEFAULTS = {
   lock: null, onboarded: false, growth: { xp: 0 }, baselines: {}
 };
 let S: any = structuredClone(DEFAULTS);
-const R: any = { paused: false, dnd: false, passthrough: false, userHidden: false, fsHidden: false };
+const R: any = { paused: false, dnd: false, passthrough: false, userHidden: false, fsHidden: false, resetShowUntil: 0 };
 const save = (...keys: string[]) => { try { db.saveSettings(Object.fromEntries(keys.map((k) => [k, S[k]]))); } catch (_) {} };
 function loadSettings() {
   const o: any = db.loadSettings();
@@ -82,14 +99,19 @@ const on = (ch: string, fn: (a?: any, e?: any) => any) => ipcMain.on(ch, (e: any
 const webPrefs = () => ({ preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true });
 
 /* ---------- 窗口 ---------- */
+const allDisplays = () => screen.getAllDisplays().map((d) => ({ workArea: d.workArea }));
 function createPet() {
-  const { width, height } = screen.getPrimaryDisplay().workAreaSize, b = S.bounds;
+  // 保存的位置先钳制到当前显示器：换屏/改分辨率后落在工作区之外的旧坐标会被拉回右下角，而不是悄悄“消失”。
+  const size = petSize(S.compact);
+  const b = clampPetBounds(S.bounds, size.w, size.h, allDisplays());
+  S.bounds = b;
   pet = new BrowserWindow({
-    width: S.compact ? 96 : 170, height: S.compact ? 100 : 190, x: b ? b.x : width - (S.compact ? 116 : 190), y: b ? b.y : height - (S.compact ? 120 : 210),
+    width: size.w, height: size.h, x: b.x, y: b.y,
     frame: false, transparent: true, resizable: false, skipTaskbar: true, hasShadow: false, alwaysOnTop: S.alwaysOnTop, webPreferences: webPrefs()
   });
   if (S.alwaysOnTop) pet.setAlwaysOnTop(true, 'screen-saver');
   watch('宠物', pet);
+  pet.on('closed', () => { if (!quitting && petRecreateN < 3) schedulePetRecreate('closed'); });
   pet.loadFile(path.join(__dirname, 'pet.html'));
   pet.webContents.on('did-finish-load', () => { send(pet, 'settings', { pet: S.pet, compact: S.compact }); publish(true); });
 }
@@ -122,25 +144,55 @@ function openDashboard(tab?: string) {
 }
 function resizePet() {
   if (!pet) return;
-  const [w, h] = S.compact ? [96, 100] : [170, 190], b = pet.getBounds();
+  const { w, h } = petSize(S.compact), b = pet.getBounds();
+  const nb = clampPetBounds({ x: b.x + b.width - w, y: b.y + b.height - h }, w, h, allDisplays());
   pet.setResizable(true);
-  pet.setBounds({ x: b.x + b.width - w, y: b.y + b.height - h, width: w, height: h });
+  pet.setBounds(nb);
   pet.setResizable(false);
   S.bounds = pet.getBounds(); save('bounds');
 }
 function syncVisibility() {
   if (!pet) return;
-  const show = !R.userHidden && !R.fsHidden;
+  // 一键复位后 30 秒内优先显示（即使全屏隐藏刚好在生效），30 秒后全屏规则恢复。
+  const show = !R.userHidden && (!R.fsHidden || Date.now() < R.resetShowUntil);
   show ? pet.show() : pet.hide();
   if (!show && panel && !panel.isDestroyed()) panel.hide();
+  if (tray) tray.setToolTip(show ? 'NetPet' : 'NetPet（宠物已隐藏，单击托盘图标可恢复）');
+}
+/** 看门狗：宠物本该显示却不可见/跑出屏幕时，把它拉回来（而不是等用户自己发现）。 */
+function ensurePetVisible() {
+  if (!pet || pet.isDestroyed() || quitting) return;
+  if (R.userHidden || (R.fsHidden && Date.now() >= R.resetShowUntil)) return;
+  const size = petSize(S.compact);
+  const nb = clampPetBounds(pet.getBounds(), size.w, size.h, allDisplays());
+  const b = pet.getBounds();
+  if (nb.x !== b.x || nb.y !== b.y) { log(`宠物位置越界，已拉回 (${b.x},${b.y}) → (${nb.x},${nb.y})`); pet.setBounds(nb); S.bounds = nb; save('bounds'); }
+  if (!pet.isVisible()) { log('宠物本该显示却不可见，已重新显示'); pet.show(); pet.moveTop(); }
+}
+/** 一键复位：只复位窗口状态——位置回主屏右下角、恢复显示、取消鼠标穿透、恢复置顶。
+    不动宠物种类、隐私开关、监控数据和成长经验。 */
+function resetPet() {
+  if (!pet || pet.isDestroyed()) createPet();
+  const size = petSize(S.compact);
+  const b = defaultPetBounds(screen.getPrimaryDisplay().workArea, size.w, size.h);
+  R.userHidden = false; R.passthrough = false; R.resetShowUntil = Date.now() + 30000;
+  S.bounds = b; save('bounds');
+  pet!.setIgnoreMouseEvents(false);
+  pet!.setBounds(b);
+  if (S.alwaysOnTop) pet!.setAlwaysOnTop(true, 'screen-saver');
+  syncVisibility(); pet!.show(); pet!.moveTop(); refreshMenu();
+  log(`宠物已一键复位到 (${b.x},${b.y})${R.fsHidden ? '（全屏隐藏开启中，30 秒后如仍在全屏会再次隐藏）' : ''}`);
+  return { ...b, fullscreenHidden: R.fsHidden };
 }
 
 /* ---------- 菜单 / 托盘 ---------- */
 function buildMenu() {
   return Menu.buildFromTemplate([
+    { label: '一键复位小宠物', click: () => resetPet() },
     { label: '显示宠物', enabled: R.userHidden, click: () => { R.userHidden = false; syncVisibility(); refreshMenu(); } },
     { label: '隐藏宠物', enabled: !R.userHidden, click: () => { R.userHidden = true; syncVisibility(); refreshMenu(); } },
     { label: '打开主面板', click: () => openDashboard() },
+    { label: '清理系统垃圾…', click: () => openDashboard('clean') },
     { type: 'separator' },
     { label: '暂停监控', type: 'checkbox', checked: R.paused, click: (i) => setRuntime({ paused: i.checked }) },
     { label: '勿扰模式', type: 'checkbox', checked: R.dnd, click: (i) => setRuntime({ dnd: i.checked }) },
@@ -158,7 +210,12 @@ function createTray() {
   try {
     tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'assets', 'icon.png')).resize({ width: 32, height: 32 }));
     tray.setToolTip('NetPet'); refreshMenu();
-    tray.on('click', () => { R.userHidden = !R.userHidden; syncVisibility(); refreshMenu(); });
+    // 旧版单击托盘就切换隐藏/显示，误点一次宠物就“没了”，且没有任何提示。
+    // 现在：宠物已隐藏时单击恢复显示；正常时单击弹出菜单（不再误隐藏）。
+    tray.on('click', () => {
+      if (R.userHidden) { R.userHidden = false; syncVisibility(); refreshMenu(); }
+      else tray.popUpContextMenu(buildMenu());
+    });
     tray.on('double-click', () => openDashboard());
   } catch (_) { tray = null; }
 }
@@ -202,7 +259,7 @@ const VIRT = /loopback|vethernet|vmware|virtualbox|vbox|hyper-v|\btap\b|\btun\b|
 const LABEL = { SLEEP: '空闲中', DOWNLOAD: '↓ 下载中', UPLOAD: '↑ 上传中', TIRED: 'CPU 繁忙', HOT: '温度偏高', SWEAT: '内存紧张', WARNING: '有健康提醒', HAPPY: '', IDLE: '' };
 const M = { rx: null, tx: null, online: true, cpu: null, memPct: null, memUsed: 0, memTotal: os.totalmem(), temp: null, healthBad: false, state: 'IDLE' };
 let lastP: any = null;
-let tickN = 0, skip = 0, offN = 0, onN = 0, lastTemp = 0, lastHw = 0, lastMemNotify = 0, minBytes = 0, lastPub = '', timer = null, connTimer = null, quitting = false;
+let tickN = 0, skip = 0, offN = 0, onN = 0, lastTemp = 0, lastHw = 0, lastMemNotify = 0, minBytes = 0, lastPub = '', timer = null, connTimer = null, watchTimer: any = null;
 
 async function readNet() {
   if (process.platform === 'win32') {
@@ -320,13 +377,19 @@ async function runHealth() {
 /* ---------- 窗口交互 IPC ---------- */
 function setupIpc() {
   on('drag-start', () => { if (pet) dragO = pet.getPosition(); });
-  on('drag-move', (d) => { if (pet && dragO && d) pet.setPosition(Math.round(dragO[0] + clamp(d.dx, -5000, 5000, 0)), Math.round(dragO[1] + clamp(d.dy, -5000, 5000, 0))); });
-  on('drag-end', () => { if (pet) { S.bounds = pet.getBounds(); save('bounds'); } });
+  on('drag-move', (d) => {
+    if (!pet || !dragO || !d) return;
+    // 拖动时就钳制：宠物永远至少留 40px 在当前屏幕内，拖不出去。
+    const size = petSize(S.compact);
+    const nb = clampPetBounds({ x: dragO[0] + clamp(d.dx, -5000, 5000, 0), y: dragO[1] + clamp(d.dy, -5000, 5000, 0) }, size.w, size.h, allDisplays());
+    pet.setPosition(nb.x, nb.y);
+  });
+  on('drag-end', () => { if (pet) { const size = petSize(S.compact); S.bounds = clampPetBounds(pet.getBounds(), size.w, size.h, allDisplays()); pet.setBounds(S.bounds); save('bounds'); } });
   on('pet-click', togglePanel);
   on('pet-dblclick', () => openDashboard());
   on('pet-menu', () => buildMenu().popup({ window: pet }));
   on('panel-open-main', () => openDashboard());
-  on('pet-ready', () => { petReady = true; maybeClearFlag(); });
+  on('pet-ready', () => { petReady = true; petRecreateN = 0; maybeClearFlag(); });
 
   let cache = { disks: [0, []], gpu: [0, []], ifs: [0, []] };
   const cached = async (k, ms, fn) => { if (Date.now() - cache[k][0] > ms) { try { cache[k] = [Date.now(), await fn()]; } catch (_) { cache[k] = [Date.now(), []]; } } return cache[k][1]; };
@@ -396,6 +459,19 @@ function setupIpc() {
   handle('exit-safe', () => { try { fs.unlinkSync(flagPath); } catch (_) {} try { fs.unlinkSync(safeFile); } catch (_) {} app.relaunch({ args: process.argv.slice(1).filter((a) => a !== '--safe') }); app.quit(); return true; });
   handle('get-runtime', () => ({ ...R, state: M.state }));
   handle('set-runtime', (p) => { setRuntime(p && typeof p === 'object' ? p : {}); return true; });
+  handle('reset-pet', () => resetPet());
+  handle('get-pet-status', () => ({
+    userHidden: R.userHidden, fsHidden: R.fsHidden, fullscreenHide: !!S.privacy.fullscreenHide,
+    bounds: S.bounds, visible: !!(pet && !pet.isDestroyed() && pet.isVisible())
+  }));
+  handle('scan-junk', async () => cleaner.scanJunk({ netpetLogsDir: path.join(userDir, 'logs') }));
+  handle('clean-junk', async (a) => {
+    const ids = Array.isArray(a && a.ids) ? a.ids.filter((x: any) => typeof x === 'string') : [];
+    if (!ids.length) return [];
+    const res = await cleaner.cleanJunk(ids, { netpetLogsDir: path.join(userDir, 'logs') });
+    log(`清理系统垃圾：${res.map((r) => `${r.id} 释放 ${(r.freed / 1048576).toFixed(1)}MB/删 ${r.deletedFiles} 个/跳过 ${r.skippedFiles} 个`).join('；')}`);
+    return res;
+  });
   handle('get-growth', () => {
     const xp = Math.floor(S.growth.xp), level = Math.floor(Math.sqrt(xp / 30)) + 1, st = db.stats();
     return { xp, level, cur: 30 * (level - 1) ** 2, next: 30 * level ** 2, daysUsed: st.daysUsed, total: st.total };
@@ -430,8 +506,14 @@ app.whenReady().then(() => {
   loadSettings(); fsm.setMuted(mutedList());
   if (st.ok) { try { db.prune(S.retentionDays); } catch (_) {} }
   createPet(); createTray(); setupIpc();
+  // 显示器变化（插拔/改分辨率/改缩放）时，把宠物拉回当前工作区；每 10 秒看门狗再检查一次。
+  const onDisplayChanged = () => { log('显示器变化，检查宠物位置'); ensurePetVisible(); };
+  screen.on('display-added', onDisplayChanged);
+  screen.on('display-removed', onDisplayChanged);
+  screen.on('display-metrics-changed', onDisplayChanged);
+  watchTimer = setInterval(ensurePetVisible, 10000);
   powerMonitor.on('suspend', () => db.flush());
-  powerMonitor.on('resume', () => { skip = 3; fsm.reset(Date.now()); });
+  powerMonitor.on('resume', () => { skip = 3; fsm.reset(Date.now()); ensurePetVisible(); });
   if (S.privacy.fullscreenHide) onPrivacyChanged();
   if (process.platform === 'win32') netmon.ensure();
   loop(); connTimer = setInterval(connTick, 8000);
@@ -439,7 +521,7 @@ app.whenReady().then(() => {
   if (!st.ok) dialog.showMessageBox({ type: 'warning', title: 'NetPet', message: '本地数据库不可用', detail: `设置和统计将无法保存。\n原因：${st.error}` });
   else if (st.recovered) dialog.showMessageBox({ type: 'warning', title: 'NetPet', message: '数据库文件已损坏，已自动重建', detail: '旧文件已保留（文件名含 .corrupt-），设置已恢复为默认值。' });
   if (!S.onboarded) openDashboard('pri');
-  if (process.env.NETPET_TEST) (global as any).__np = { openDashboard, togglePanel, applyPatch, setRuntime, wins: () => ({ pet, dash, panel }), S: () => S, M, runHealth };
+  if (process.env.NETPET_TEST) (global as any).__np = { openDashboard, togglePanel, applyPatch, setRuntime, resetPet, ensurePetVisible, wins: () => ({ pet, dash, panel }), S: () => S, M, runHealth };
 });
 app.on('second-instance', () => { openDashboard(); });
 app.on('window-all-closed', () => { /* 有此监听即不会在窗口全关时退出，常驻托盘 */ });
@@ -448,7 +530,7 @@ app.on('child-process-gone', (_e, d) => log(`子进程退出 type=${d.type} reas
 app.on('before-quit', (e) => {
   if (quitDone) return;
   e.preventDefault(); quitDone = true; quitting = true;
-  clearTimeout(timer); clearInterval(connTimer);
+  clearTimeout(timer); clearInterval(connTimer); clearInterval(watchTimer); clearTimeout(petRecreateTimer);
   save('growth'); fullscreen.stop(); netmon.stop(); security.killAll(); // 不留下任何后台子进程
   stopCollector().finally(() => { db.close(); log('正常退出'); app.quit(); });
 });

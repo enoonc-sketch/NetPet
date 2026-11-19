@@ -50,8 +50,13 @@ function App() {
       }
       drag.current = null;
     };
+    // WebGL 上下文丢失（显卡驱动/显存问题）时，旧版只剩一个透明空窗口，看起来像宠物消失了；
+    // 现在立刻退回 emoji 宠物，主进程的渲染进程崩溃重建是第二道防线。
+    const cv = canvas.current!;
+    const onLost = (e: Event) => { e.preventDefault(); try { p3d.current?.dispose(); } catch (_) {} p3d.current = null; setHas3d(false); };
+    cv.addEventListener('webglcontextlost', onLost);
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
-    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); p3d.current?.dispose(); };
+    return () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); cv.removeEventListener('webglcontextlost', onLost); p3d.current?.dispose(); };
   }, []);
 
   const [mood, flag] = ps.paused ? (['sleep'] as [string]) : MAP[ps.state] || MAP.IDLE;

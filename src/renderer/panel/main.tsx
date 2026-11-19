@@ -43,7 +43,8 @@ function App() {
       <div className="mute">
         {sys && !sys.hwOn ? '硬件状态监控已关闭（可在完整窗口 → 隐私 开启）' : sys ? <>GPU：{g ? g.name + (g.util != null ? ' ' + g.util + '%' : '（无法读取占用）') : '无法检测'}<br />温度：{sys.temp ? sys.temp.toFixed(0) + '℃' : '读不到'}{sys.battery ? <><br />电量：{sys.battery.pct}%{sys.battery.charging ? '（充电中）' : ''}</> : null}</> : null}
       </div>
-      <button onClick={() => api.send('panel-open-main')}>打开完整窗口</button>
+      <div className="row"><button onClick={() => api.send('panel-open-main')}>打开完整窗口</button>
+        <button onClick={() => api.invoke('reset-pet').catch(() => {})}>复位小宠物</button></div>
     </div>
   );
 }
