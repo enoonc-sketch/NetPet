@@ -34,7 +34,7 @@ function App() {
   const g = sys && (sys.gpu || [])[0];
   return (
     <div className="card">
-      <div className="row"><span className="st">{ps ? (ps.paused ? '已暂停' : NAME[ps.state] || ps.state) : '待机'}</span><span className="mute">{sp.online === false ? '网络已断开' : sp.rx == null ? '网速监控未开启' : ''}</span></div>
+      <div className="row"><span className="st">{ps ? (ps.paused ? '已暂停' : NAME[ps.state] || ps.state) : '待机'}</span><span className="mute">{sp.online === false ? '网络已断开' : ps?.internet === 'fail' ? '已连接但上不了网' : ps?.internet === 'portal' ? '需要网页登录' : sp.rx == null ? '网速监控未开启' : ''}</span></div>
       <div className="row" style={{ marginTop: 6 }}><span className="big d">↓ {fmt(sp.rx)}</span><span className="big u">↑ {fmt(sp.tx)}</span></div>
       <canvas ref={cv} />
       <div className="row"><span>CPU</span><span>{sm ? sm.cpu.toFixed(0) + '%' : sys && !sys.hwOn ? '未开启' : '—'}</span></div><div className="bar"><i style={{ width: (sm ? sm.cpu : 0) + '%' }} /></div>

@@ -104,7 +104,8 @@ function connections(days, text, limit = 500) {
   return { rows, total, byProc, byHost };
 }
 function toCsv(rows) {
-  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  // 防 CSV 公式注入：反查主机名可被对方控制，以 = + - @ 制表符/回车开头的单元格加 ' 前缀
+  const esc = (v) => { let s = String(v ?? ''); if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; return `"${s.replace(/"/g, '""')}"`; };
   const head = ['时间', '程序', 'PID', '远端IP', '端口', '主机名(反查)', '协议', '提示(仅供参考)'];
   return '\ufeff' + [head.map(esc).join(','), ...rows.map((r) => [new Date(r.t).toLocaleString(), r.proc, r.pid, r.ip, r.port, r.host, r.proto, r.note].map(esc).join(','))].join('\r\n');
 }

@@ -1,4 +1,8 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, Notification, dialog, powerMonitor, session, shell } from 'electron';
+import { app, BrowserWindow, Tray, Menu, nativeImage, screen, ipcMain, Notification, dialog, powerMonitor, session, shell, safeStorage } from 'electron';
+import * as secure from './secure';
+import * as memtrim from './memtrim';
+import { quotaStep, NewProcWatcher, Reminder } from './extras';
+import * as selfupdate from './selfupdate';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,8 +16,13 @@ import * as db from './db';
 import * as security from './security';
 import * as fullscreen from './fullscreen';
 import * as cleaner from './cleaner';
+import * as startup from './startup';
+import * as vpn from './vpn';
+import * as winupdate from './winupdate';
+import { probeOnce, ProbeState } from './probe';
 import { clampPetBounds, defaultPetBounds, petSize } from './petgeom';
 import { PetStateMachine } from './petstate';
+import { hasUsableAddress, RateBudget, sampleSeconds } from './guards';
 import { PETS } from '../shared/petlist';
 
 app.setPath('userData', path.join(app.getPath('appData'), 'NetPet'));
@@ -48,12 +57,15 @@ const si: any = {
   graphics: () => collect('graphics', 20000), battery: () => collect('battery', 8000), processes: () => collect('processes', 15000)
 };
 let petRecreateTimer: any = null, petRecreateN = 0, quitting = false;
+// 按时间窗口计数：5 分钟内最多自动重建 3 次（旧版 pet-ready 会清零计数，加载后才崩溃时会无限重建）
+const recreateBudget = new RateBudget(3, 5 * 60e3);
+const recreateBudgetLeft = () => recreateBudget.left();
 function schedulePetRecreate(reason: string) {
   // 旧版只记日志不重建：3D/WebGL 渲染进程一崩，透明窗口就剩一个空白框，看起来就是宠物“没了”。
   if (quitting || petRecreateTimer) return;
-  if (petRecreateN >= 3) { log(`宠物渲染进程多次崩溃(${reason})，已停止自动重建，请用托盘菜单“一键复位小宠物”`); notify('小宠物渲染失败', '宠物窗口多次崩溃已停止自动重建，请右键托盘图标 → 一键复位小宠物。'); return; }
+  if (!recreateBudgetLeft()) { log(`宠物渲染进程多次崩溃(${reason})，已停止自动重建，请用托盘菜单“一键复位小宠物”`); notify('小宠物渲染失败', '宠物窗口多次崩溃已停止自动重建，请右键托盘图标 → 一键复位小宠物。'); return; }
   petRecreateTimer = setTimeout(() => {
-    petRecreateTimer = null; petRecreateN++;
+    petRecreateTimer = null; petRecreateN++; recreateBudget.use();
     log(`重建宠物窗口(${reason})，第 ${petRecreateN} 次`);
     try { if (pet && !pet.isDestroyed()) pet.destroy(); } catch (_) {}
     pet = null; createPet(); syncVisibility();
@@ -70,23 +82,43 @@ function watch(name: string, w: BrowserWindow) {
 /* ---------- 设置 ---------- */
 const DEFAULTS = {
   compact: false,
-  privacy: { net: true, hw: true, conn: false, dns: false, proc: false, health: false, fullscreenHide: false },
+  privacy: { net: true, hw: true, conn: false, dns: false, proc: false, health: false, fullscreenHide: false, probe: false },
   pet: 'cat', alwaysOnTop: true, bounds: null, retentionDays: 30, memAlert: 90,
   anim: { DOWNLOAD: true, UPLOAD: true, TIRED: true, HOT: true, SWEAT: true, WARNING: true },
-  lock: null, onboarded: false, growth: { xp: 0 }, baselines: {}
+  memTrim: { auto: false, threshold: 90, skipFg: true }, lastTrim: null,
+  quota: { gb: 0, notified: 0, month: '' }, lastSelfUpd: null, newProc: { on: false, learnUntil: 0, known: [] as string[] }, remind: { sit: 0, water: 0 },
+  lock: null, onboarded: false, growth: { xp: 0 }, baselines: {},
+  vpn: { exe: '', config: '', sysProxy: true }, vpnProxyBackup: null, lastUpdateCheck: null
 };
 let S: any = structuredClone(DEFAULTS);
 const R: any = { paused: false, dnd: false, passthrough: false, userHidden: false, fsHidden: false, resetShowUntil: 0 };
-const save = (...keys: string[]) => { try { db.saveSettings(Object.fromEntries(keys.map((k) => [k, S[k]]))); } catch (_) {} };
+const cipher: secure.Cipher = {
+  available: () => { try { return safeStorage.isEncryptionAvailable(); } catch (_) { return false; } },
+  encrypt: (s) => safeStorage.encryptString(s), decrypt: (b) => safeStorage.decryptString(b)
+};
+const ENC = { available: false, failed: [] as string[] }; // 给隐私页显示
+const save = (...keys: string[]) => { try { db.saveSettings(Object.fromEntries(keys.map((k) => [k, secure.seal(k, S[k], cipher)]))); } catch (_) {} };
 function loadSettings() {
   const o: any = db.loadSettings();
-  S = { ...structuredClone(DEFAULTS), ...o, privacy: { ...DEFAULTS.privacy, ...(o.privacy || {}) }, anim: { ...DEFAULTS.anim, ...(o.anim || {}) } };
-  if (SAFE) S.privacy = { ...S.privacy, hw: false, conn: false, dns: false, proc: false, health: false, fullscreenHide: false };
+  // 解密敏感设置；旧版本留下的明文在加密可用时立即改存为密文
+  ENC.available = cipher.available(); ENC.failed = [];
+  const migrate: string[] = [];
+  for (const k of secure.SENSITIVE_KEYS) {
+    if (!(k in o)) continue;
+    const r = secure.unseal(k, o[k], cipher);
+    if (r.failed) { ENC.failed.push(k); delete o[k]; log(`敏感设置 ${k} 无法解密（数据库可能来自别的电脑或账户），已重置`); }
+    else { o[k] = r.value; if (r.plain && ENC.available) migrate.push(k); }
+  }
+  S = { ...structuredClone(DEFAULTS), ...o, quota: { ...DEFAULTS.quota, ...(o.quota || {}) }, newProc: { ...DEFAULTS.newProc, ...(o.newProc || {}) }, remind: { ...DEFAULTS.remind, ...(o.remind || {}) }, memTrim: { ...DEFAULTS.memTrim, ...(o.memTrim || {}) }, vpn: { ...DEFAULTS.vpn, ...(o.vpn || {}) }, privacy: { ...DEFAULTS.privacy, ...(o.privacy || {}) }, anim: { ...DEFAULTS.anim, ...(o.anim || {}) } };
+  if (SAFE) S.memTrim = { ...S.memTrim, auto: false };
+  if (migrate.length) { save(...migrate); log('已把旧版明文敏感设置改为加密保存：' + migrate.join(',')); }
+  if (ENC.failed.includes('lock')) setTimeout(() => notify('面板密码已失效', '数据库来自别的电脑或 Windows 账户，密码无法解密，已移除。请在 隐私 页重新设置。'), 3000);
+  if (SAFE) S.privacy = { ...S.privacy, hw: false, conn: false, dns: false, proc: false, health: false, fullscreenHide: false, probe: false };
 }
 
 /* ---------- 工具 ---------- */
 let pet: BrowserWindow | null = null, dash: BrowserWindow | null = null, panel: BrowserWindow | null = null, tray: Tray | null = null, panelHiddenAt = 0;
-let dragO: number[] | null = null;
+let dragO: number[] | null = null, resetTimer: any = null;
 const send = (w: BrowserWindow | null, ch: string, d?: unknown) => { if (w && !w.isDestroyed()) w.webContents.send(ch, d); };
 const sendAll = (ch: string, d?: unknown) => { send(pet, ch, d); send(dash, ch, d); send(panel, ch, d); };
 const notify = (title: string, body: string) => { if (R.dnd) return; try { if (Notification.isSupported()) new Notification({ title, body }).show(); } catch (_) {} };
@@ -94,7 +126,15 @@ const fmt = (b: number) => (b < 1024 ? `${Math.round(b)} B/s` : b < 1048576 ? `$
 const isOurs = (e: any) => [pet, dash, panel].some((w) => w && !w.isDestroyed() && w.webContents === e.sender);
 const clamp = (v: any, a: number, b: number, d: number) => { v = Number(v); return Number.isFinite(v) ? Math.min(b, Math.max(a, Math.round(v))) : d; };
 const str = (v: any, n = 100) => (typeof v === 'string' ? v.slice(0, n) : '');
-const handle = (ch: string, fn: (a?: any, e?: any) => any) => ipcMain.handle(ch, (e: any, a: any) => { if (!isOurs(e)) throw new Error('untrusted sender'); return fn(a, e); });
+// 密码锁在主进程强制：上锁且未解锁时，敏感通道一律拒绝（旧版只在界面上挡，IPC 可直接调用）
+let unlocked = false;
+const LOCKED_CH = new Set(['get-records', 'export-csv', 'clear-records', 'clear-all', 'backup-db', 'open-data-dir', 'set-password', 'set-settings', 'get-processes',
+  'run-security', 'last-security', 'get-warnings', 'quick-scan', 'scan-junk', 'clean-junk', 'list-startup', 'set-startup', 'export-diag', 'trim-mem', 'check-updates', 'last-updates', 'open-winupdate', 'vpn-status', 'vpn-start', 'vpn-stop', 'vpn-pick', 'vpn-set', 'show-startup-file', 'open-taskmgr-startup', 'exit-safe', 'db-status', 'get-adapters']);
+const handle = (ch: string, fn: (a?: any, e?: any) => any) => ipcMain.handle(ch, (e: any, a: any) => {
+  if (!isOurs(e)) throw new Error('untrusted sender');
+  if (LOCKED_CH.has(ch) && S.lock && !unlocked) throw new Error('locked');
+  return fn(a, e);
+});
 const on = (ch: string, fn: (a?: any, e?: any) => any) => ipcMain.on(ch, (e: any, a: any) => { if (isOurs(e)) fn(a, e); });
 const webPrefs = () => ({ preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true });
 
@@ -111,7 +151,8 @@ function createPet() {
   });
   if (S.alwaysOnTop) pet.setAlwaysOnTop(true, 'screen-saver');
   watch('宠物', pet);
-  pet.on('closed', () => { if (!quitting && petRecreateN < 3) schedulePetRecreate('closed'); });
+  pet.on('closed', () => { if (!quitting && recreateBudgetLeft()) schedulePetRecreate('closed'); });
+  if (R.passthrough) pet.setIgnoreMouseEvents(true, { forward: true }); // 重建后保持鼠标穿透状态与菜单一致
   pet.loadFile(path.join(__dirname, 'pet.html'));
   pet.webContents.on('did-finish-load', () => { send(pet, 'settings', { pet: S.pet, compact: S.compact }); publish(true); });
 }
@@ -122,6 +163,7 @@ function createPanel() {
   panel.on('blur', () => { if (panel.isVisible()) { panel.hide(); panelHiddenAt = Date.now(); } });
 }
 function showPanel() {
+  if (!pet || pet.isDestroyed()) return;
   if (!panel || panel.isDestroyed()) createPanel();
   const b = pet.getBounds(), wa = screen.getDisplayMatching(b).workArea, [w, h] = [280, 400];
   const x = Math.min(wa.x + wa.width - w, Math.max(wa.x, b.x + b.width / 2 - w / 2));
@@ -140,7 +182,7 @@ function openDashboard(tab?: string) {
   watch('主面板', dash);
   dash.loadFile(path.join(__dirname, 'dashboard.html'));
   if (tab) dash.webContents.once('did-finish-load', () => send(dash, 'goto', tab));
-  dash.on('closed', () => { dash = null; });
+  dash.on('closed', () => { dash = null; unlocked = false; }); // 关闭主面板即重新上锁
 }
 function resizePet() {
   if (!pet) return;
@@ -181,6 +223,9 @@ function resetPet() {
   pet!.setBounds(b);
   if (S.alwaysOnTop) pet!.setAlwaysOnTop(true, 'screen-saver');
   syncVisibility(); pet!.show(); pet!.moveTop(); refreshMenu();
+  // 30 秒优先显示期结束后重新应用全屏规则（旧版没有这个定时器，复位后会一直显示）
+  if (resetTimer) clearTimeout(resetTimer);
+  resetTimer = setTimeout(() => { resetTimer = null; if (!quitting) syncVisibility(); }, 30100);
   log(`宠物已一键复位到 (${b.x},${b.y})${R.fsHidden ? '（全屏隐藏开启中，30 秒后如仍在全屏会再次隐藏）' : ''}`);
   return { ...b, fullscreenHidden: R.fsHidden };
 }
@@ -193,6 +238,10 @@ function buildMenu() {
     { label: '隐藏宠物', enabled: !R.userHidden, click: () => { R.userHidden = true; syncVisibility(); refreshMenu(); } },
     { label: '打开主面板', click: () => openDashboard() },
     { label: '清理系统垃圾…', click: () => openDashboard('clean') },
+    { label: '启动管理…', click: () => openDashboard('boot') },
+    { label: '整理运行内存', click: () => { doTrim(false).catch(() => {}); } },
+    { label: '检查系统更新…', click: () => openDashboard('upd') },
+    { label: vpn.running() ? 'VPN：已连接（点击断开）' : 'VPN（sing-box）…', click: () => { if (vpn.running()) vpn.stop(); else openDashboard('vpn'); } },
     { type: 'separator' },
     { label: '暂停监控', type: 'checkbox', checked: R.paused, click: (i) => setRuntime({ paused: i.checked }) },
     { label: '勿扰模式', type: 'checkbox', checked: R.dnd, click: (i) => setRuntime({ dnd: i.checked }) },
@@ -201,6 +250,7 @@ function buildMenu() {
     { label: '切换宠物', submenu: PETS.map((p) => ({ label: `${p.emoji} ${p.name}`, type: 'radio', checked: S.pet === p.id, click: () => applyPatch({ pet: p.id }) })) },
     { type: 'separator' },
     { label: '设置', click: () => openDashboard('set') },
+    { label: '检查 NetPet 新版本…', click: () => openDashboard('set') },
     { label: '开机自启', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: (i) => applyPatch({ autostart: i.checked }) },
     { label: '退出软件', click: () => app.quit() }
   ]);
@@ -223,6 +273,30 @@ function createTray() {
 /* ---------- 运行时开关 / 设置补丁（所有参数都做校验）---------- */
 const mutedList = () => (R.dnd ? Object.keys(DEFAULTS.anim) : Object.keys(S.anim).filter((k) => !S.anim[k]));
 const fsm = new PetStateMachine();
+const trimTrig = new memtrim.AutoTrigger();
+let npw: NewProcWatcher | null = null;
+const reminder = new Reminder();
+const REMIND = { sit: ['起来活动一下吧', '已经连续用电脑很久了，站起来伸个懒腰、看看远处。'], water: ['该喝水啦', '喝几口水，休息一下眼睛。'] };
+let remindLabel = '', remindUntil = 0;
+function checkQuota() {
+  if (!(S.quota.gb > 0) || !S.privacy.net) return;
+  const m = db.month(), key = new Date().toISOString().slice(0, 7);
+  if (S.quota.month !== key) { S.quota.month = key; S.quota.notified = 0; save('quota'); }
+  const step = quotaStep(m.rx + m.tx, S.quota.gb, S.quota.notified);
+  if (!step) return;
+  S.quota.notified = step; save('quota');
+  const t = step >= 100 ? '本月流量已用完额度' : '本月流量已用 80%';
+  notify(t, `本月已用 ${((m.rx + m.tx) / 1073741824).toFixed(1)} GB / 额度 ${S.quota.gb} GB。`); try { db.addWarning(step >= 100 ? 'warn' : 'info', t, ''); } catch (_) {}
+  remindLabel = step >= 100 ? '流量超额度了' : '流量快用完了'; remindUntil = Date.now() + 60e3; publish(true);
+}
+async function doTrim(auto: boolean) {
+  const r = await memtrim.trim([process.pid, ...app.getAppMetrics().map((m) => m.pid)]);
+  S.lastTrim = { ...r, at: Date.now(), auto }; save('lastTrim');
+  const mb = (x: number) => (x / 1048576).toFixed(0);
+  log(`运行内存清理${auto ? '（自动）' : ''}：处理 ${r.trimmed} 个程序，可用内存增加约 ${mb(Math.max(0, r.before - r.after))}MB${r.error ? ' 错误=' + r.error : ''}`);
+  if (auto && r.ok) notify('已自动整理运行内存', `内存占用 ${((r.after / os.totalmem()) * 100).toFixed(0)}%（整理前 ${((r.before / os.totalmem()) * 100).toFixed(0)}%）。没有关闭任何程序。`);
+  return S.lastTrim;
+}
 function setRuntime(p) {
   if (typeof p.paused === 'boolean') { R.paused = p.paused; fsm.reset(Date.now()); }
   if (typeof p.dnd === 'boolean') { R.dnd = p.dnd; fsm.setMuted(mutedList()); }
@@ -231,6 +305,7 @@ function setRuntime(p) {
 }
 function onPrivacyChanged() {
   if (!S.privacy.conn) seen.clear();
+  if (!S.privacy.probe) probeSt.reset();
   if (S.privacy.fullscreenHide) fullscreen.start((hidden) => { R.fsHidden = hidden; syncVisibility(); });
   else { fullscreen.stop(); R.fsHidden = false; syncVisibility(); }
   fsm.reset(Date.now()); publish(true);
@@ -239,7 +314,8 @@ function applyPatch(p) {
   p = p && typeof p === 'object' ? p : {};
   if (p.privacy && typeof p.privacy === 'object') {
     for (const k of Object.keys(DEFAULTS.privacy)) if (typeof p.privacy[k] === 'boolean') S.privacy[k] = p.privacy[k];
-    save('privacy'); onPrivacyChanged();
+    // 安全模式下 S.privacy 是被强制关闭的临时值，不能写回数据库，否则会覆盖用户原来的选择
+    if (!SAFE) save('privacy'); onPrivacyChanged();
   }
   if (typeof p.compact === 'boolean') { S.compact = p.compact; resizePet(); save('compact'); sendAll('settings', { pet: S.pet, compact: S.compact }); }
   if (typeof p.autostart === 'boolean') app.setLoginItemSettings({ openAtLogin: p.autostart });
@@ -247,6 +323,22 @@ function applyPatch(p) {
   if ([80, 85, 90, 95].includes(p.memAlert)) { S.memAlert = p.memAlert; save('memAlert'); }
   if ([7, 30, 90].includes(p.retentionDays)) { S.retentionDays = p.retentionDays; try { db.prune(S.retentionDays); } catch (_) {} save('retentionDays'); }
   if (typeof p.pet === 'string' && PETS.some((x) => x.id === p.pet)) { S.pet = p.pet; sendAll('settings', { pet: S.pet }); save('pet'); }
+  if (p.quota && typeof p.quota === 'object') { const g = Number(p.quota.gb); if (Number.isFinite(g) && g >= 0 && g <= 100000) { S.quota.gb = Math.round(g); S.quota.notified = 0; save('quota'); checkQuota(); } }
+  if (p.remind && typeof p.remind === 'object') {
+    if ([0, 30, 45, 60, 90, 120].includes(p.remind.sit)) S.remind.sit = p.remind.sit;
+    if ([0, 30, 45, 60, 90, 120].includes(p.remind.water)) S.remind.water = p.remind.water;
+    reminder.reset(); save('remind');
+  }
+  if (p.newProc && typeof p.newProc.on === 'boolean') {
+    S.newProc.on = p.newProc.on;
+    if (p.newProc.on) { S.newProc.learnUntil = Date.now() + 24 * 3600e3; S.newProc.known = []; npw = null; } // 重新开启时重新学习 24 小时
+    save('newProc');
+  }
+  if (p.memTrim && typeof p.memTrim === 'object') {
+    if (typeof p.memTrim.auto === 'boolean') { S.memTrim.auto = p.memTrim.auto; trimTrig.reset(); }
+    if ([80, 85, 90, 95].includes(p.memTrim.threshold)) S.memTrim.threshold = p.memTrim.threshold;
+    save('memTrim');
+  }
   if (p.anim && typeof p.anim === 'object') {
     for (const k of Object.keys(DEFAULTS.anim)) if (typeof p.anim[k] === 'boolean') S.anim[k] = p.anim[k];
     fsm.setMuted(mutedList()); save('anim');
@@ -255,11 +347,12 @@ function applyPatch(p) {
 }
 
 /* ---------- 实时采样 ---------- */
-const VIRT = /loopback|vethernet|vmware|virtualbox|vbox|hyper-v|\btap\b|\btun\b|wintun|wireguard|tailscale|zerotier|clash|sing-?box|meta|bluetooth|pseudo|npcap|docker|wsl/i;
+const VIRT = /loopback|vethernet|vmware|virtualbox|vbox|hyper-v|\btap\b|\btun\b|wintun|wireguard|tailscale|zerotier|clash|sing-?box|sing-?tun|meta|bluetooth|pseudo|npcap|docker|wsl/i;
 const LABEL = { SLEEP: '空闲中', DOWNLOAD: '↓ 下载中', UPLOAD: '↑ 上传中', TIRED: 'CPU 繁忙', HOT: '温度偏高', SWEAT: '内存紧张', WARNING: '有健康提醒', HAPPY: '', IDLE: '' };
 const M = { rx: null, tx: null, online: true, cpu: null, memPct: null, memUsed: 0, memTotal: os.totalmem(), temp: null, healthBad: false, state: 'IDLE' };
 let lastP: any = null;
-let tickN = 0, skip = 0, offN = 0, onN = 0, lastTemp = 0, lastHw = 0, lastMemNotify = 0, minBytes = 0, lastPub = '', timer = null, connTimer = null, watchTimer: any = null;
+const probeSt = new ProbeState(); let probing = false;
+let lastNetAt = 0, tickN = 0, skip = 0, offN = 0, onN = 0, lastTemp = 0, lastHw = 0, lastMemNotify = 0, minBytes = 0, lastPub = '', timer = null, connTimer = null, watchTimer: any = null, healthTimer: any = null;
 
 async function readNet() {
   if (process.platform === 'win32') {
@@ -273,14 +366,21 @@ async function readNet() {
   for (const s of use) { rx += s.rx_sec > 0 ? s.rx_sec : 0; tx += s.tx_sec > 0 ? s.tx_sec : 0; }
   return rx > 5e9 || tx > 5e9 ? { rx: 0, tx: 0 } : { rx, tx }; // 计数器重置/异常值直接丢弃
 }
-const hasIPv4 = () => Object.values(os.networkInterfaces()).some((l) => (l || []).some((a) => a.family === 'IPv4' && !a.internal && !a.address.startsWith('169.254.')));
+// 有可用的 IPv4（非 169.254 自动地址）或全局 IPv6（非 fe80 链路本地）就算在线，纯 IPv6 网络不再误报断网
+const hasIPv4 = () => hasUsableAddress(os.networkInterfaces() as any);
 function netEvent(up) {
   const t = up ? '网络已恢复' : '网络已断开';
   notify(t, up ? '网络连接已恢复。' : '检测不到可用的网络连接。'); try { db.addWarning('info', t, ''); } catch (_) {}
 }
+function inetEvent(r) {
+  const t = r === 'ok' ? '已恢复上网' : r === 'portal' ? '这个网络需要网页登录' : '已连接网络，但上不了网';
+  const b = r === 'ok' ? '联网检测正常。' : r === 'portal' ? '打开浏览器访问任意网页，按提示登录 Wi-Fi。' : '本机有网络连接，但访问不到互联网。可检查路由器/宽带或代理设置。';
+  notify(t, b); try { db.addWarning('info', t, ''); } catch (_) {}
+}
 function publish(force) {
-  const label = R.paused ? '已暂停监控' : (S.privacy.net && !M.online) ? '网络已断开' : LABEL[M.state] || '';
-  const p = { state: M.state, label, paused: R.paused, dnd: R.dnd, online: S.privacy.net ? M.online : null };
+  const noInet = S.privacy.net && S.privacy.probe && M.online && (probeSt.value === 'fail' || probeSt.value === 'portal');
+  const label = Date.now() < remindUntil && !R.paused ? remindLabel : R.paused ? '已暂停监控' : (S.privacy.net && !M.online) ? '网络已断开' : noInet ? (probeSt.value === 'portal' ? '需要网页登录' : '已连接但上不了网') : LABEL[M.state] || '';
+  const p = { state: M.state, label, paused: R.paused, dnd: R.dnd, online: S.privacy.net ? M.online : null, internet: S.privacy.net && S.privacy.probe ? probeSt.value : null };
   const key = JSON.stringify(p);
   if (!force && key === lastPub) return;
   lastPub = key; lastP = p; sendAll('pstate', p);
@@ -292,13 +392,20 @@ async function tick() {
     if (S.privacy.net) {
       try {
         const n = await readNet();
-        if (skip > 0) { skip--; M.rx = 0; M.tx = 0; } else { M.rx = n.rx; M.tx = n.tx; db.addTraffic(n.rx, n.tx); minBytes += n.rx + n.tx; }
+        // 按真实间隔累计字节（tick 间隔常因采集等待超过 1 秒；最多按 5 秒算，避免休眠唤醒的大跳变）
+        const dt = sampleSeconds(now, lastNetAt); lastNetAt = now;
+        if (skip > 0) { skip--; M.rx = 0; M.tx = 0; } else { M.rx = n.rx; M.tx = n.tx; db.addTraffic(n.rx * dt, n.tx * dt); minBytes += (n.rx + n.tx) * dt; }
       } catch (_) { M.rx = 0; M.tx = 0; }
       const o = hasIPv4();
       if (o === M.online) { offN = onN = 0; }
       else if (o) { if (++onN >= 2) { M.online = true; onN = 0; netEvent(true); } }
       else if (++offN >= 2) { M.online = false; offN = 0; netEvent(false); }
-      if (!M.online) { M.rx = 0; M.tx = 0; }
+      if (!M.online) { M.rx = 0; M.tx = 0; probeSt.reset(); }
+      // 可选真实联网检测：本机有地址时每 30 秒探测一次（不阻塞 tick）
+      else if (S.privacy.probe && !probing && (tickN % 30 === 1 || probeSt.value === null && tickN % 5 === 1)) {
+        probing = true;
+        probeOnce().then((r) => { const prev = probeSt.value; if (probeSt.push(r)) { if (prev !== null || r !== 'ok') inetEvent(r); publish(true); } }).finally(() => { probing = false; });
+      }
     } else { M.rx = M.tx = null; }
     if (S.privacy.hw) {
       if (tickN % 3 === 0) {
@@ -308,6 +415,7 @@ async function tick() {
           const smp = { cpu: M.cpu, used: M.memUsed, total: M.memTotal, pct: M.memPct, temp: M.temp };
           send(dash, 'sample', smp); send(panel, 'sample', smp);
           if (now - lastHw > 60000) { lastHw = now; try { db.addHardware(now, M.cpu, M.memPct, M.temp); } catch (_) {} }
+          if (S.memTrim.auto && trimTrig.update(now, M.memPct, S.memTrim.threshold)) doTrim(true).catch(() => {});
           if (M.memPct >= S.memAlert && now - lastMemNotify > 10 * 60e3) { lastMemNotify = now; notify('内存使用率偏高', `当前内存占用 ${M.memPct.toFixed(0)}%。可以在面板里查看占用排行。`); }
         } catch (_) {}
       }
@@ -323,6 +431,17 @@ async function tick() {
     if (tray) tray.setToolTip(`NetPet\n↓ ${fmt(M.rx)}\n↑ ${fmt(M.tx)}`);
   } else { sendAll('speed', { rx: null, tx: null, online: null }); if (tray) tray.setToolTip(R.paused ? 'NetPet（已暂停监控）' : 'NetPet'); }
   maybeClearFlag();
+  if (tickN % 60 === 0) { try { db.flush(); } catch (_) {} try { checkQuota(); } catch (_) {} }
+  if (tickN % 30 === 0 && (S.remind.sit > 0 || S.remind.water > 0)) {
+    reminder.sitMin = S.remind.sit; reminder.waterMin = S.remind.water;
+    let idle = 0; try { idle = powerMonitor.getSystemIdleTime(); } catch (_) {}
+    for (const k of reminder.tick(now, idle, R.dnd || R.paused || R.fsHidden || R.userHidden)) {
+      remindLabel = REMIND[k][0]; remindUntil = now + 20e3; publish(true);
+      try { if (Notification.isSupported()) new Notification({ title: REMIND[k][0], body: REMIND[k][1], silent: true }).show(); } catch (_) {}
+    }
+  }
+  if (remindUntil && now >= remindUntil) { remindUntil = 0; publish(true); } // 每分钟落盘，异常退出最多丢 1 分钟流量
+  if (tickN % 3600 === 0) { try { db.prune(S.retentionDays); } catch (_) {} } // 常驻时每小时按保留期清理一次
   if (tickN % 60 === 0 && !R.paused && (S.privacy.net || S.privacy.hw)) { S.growth.xp += 1 + (minBytes / 1e9) * 5; minBytes = 0; if (tickN % 300 === 0) save('growth'); }
 }
 const loop = async () => { const t0 = Date.now(); try { await tick(); } catch (e: any) { log('tick 出错 ' + (e && e.message)); } const d = Date.now() - t0; if (d > 3000) log(`tick 耗时 ${d}ms`); if (!quitting) timer = setTimeout(loop, 1000); };
@@ -354,6 +473,16 @@ async function connTick() {
     }
     const rows = await Promise.all(fresh.map(async (c) => ({ t: now, proc: c.process || `PID ${c.pid}`, pid: c.pid, ip: c.peerAddress, port: Number(c.peerPort), host: await resolveHost(c.peerAddress), proto: c.protocol, note: noteFor(c) })));
     db.addConnections(rows);
+    if (S.newProc.on && rows.length) {
+      if (!npw) npw = new NewProcWatcher(S.newProc.known, S.newProc.learnUntil);
+      const before = npw.known.size;
+      for (const p of npw.see(now, rows.map((r) => r.proc))) {
+        const r = rows.find((x) => x.proc === p)!;
+        notify('有程序第一次联网', `${p} → ${r.host || r.ip}:${r.port}。如果你不认识这个程序，可以在 网络统计 → 连接记录 里查看。`);
+        try { db.addWarning('info', `${p} 第一次联网`, `${r.ip}:${r.port}`); } catch (_) {}
+      }
+      if (npw.known.size !== before) { S.newProc.known = npw.list(); save('newProc'); }
+    }
     for (const [k, t] of seen) if (now - t > 10 * 60e3) seen.delete(k);
   } catch (_) {}
 }
@@ -376,37 +505,73 @@ async function runHealth() {
 
 /* ---------- 窗口交互 IPC ---------- */
 function setupIpc() {
-  on('drag-start', () => { if (pet) dragO = pet.getPosition(); });
+  on('drag-start', () => { if (pet && !pet.isDestroyed()) dragO = pet.getPosition(); });
   on('drag-move', (d) => {
-    if (!pet || !dragO || !d) return;
+    if (!pet || pet.isDestroyed() || !dragO || !d) return;
     // 拖动时就钳制：宠物永远至少留 40px 在当前屏幕内，拖不出去。
     const size = petSize(S.compact);
     const nb = clampPetBounds({ x: dragO[0] + clamp(d.dx, -5000, 5000, 0), y: dragO[1] + clamp(d.dy, -5000, 5000, 0) }, size.w, size.h, allDisplays());
     pet.setPosition(nb.x, nb.y);
   });
-  on('drag-end', () => { if (pet) { const size = petSize(S.compact); S.bounds = clampPetBounds(pet.getBounds(), size.w, size.h, allDisplays()); pet.setBounds(S.bounds); save('bounds'); } });
+  on('drag-end', () => { dragO = null; if (pet && !pet.isDestroyed()) { const size = petSize(S.compact); S.bounds = clampPetBounds(pet.getBounds(), size.w, size.h, allDisplays()); pet.setBounds(S.bounds); save('bounds'); } });
   on('pet-click', togglePanel);
   on('pet-dblclick', () => openDashboard());
-  on('pet-menu', () => buildMenu().popup({ window: pet }));
+  on('pet-menu', () => { if (pet && !pet.isDestroyed()) buildMenu().popup({ window: pet }); });
   on('panel-open-main', () => openDashboard());
-  on('pet-ready', () => { petReady = true; petRecreateN = 0; maybeClearFlag(); });
+  on('pet-ready', () => { petReady = true; maybeClearFlag(); });
 
-  let cache = { disks: [0, []], gpu: [0, []], ifs: [0, []] };
-  const cached = async (k, ms, fn) => { if (Date.now() - cache[k][0] > ms) { try { cache[k] = [Date.now(), await fn()]; } catch (_) { cache[k] = [Date.now(), []]; } } return cache[k][1]; };
+  let cache: any = { disks: [0, []], gpu: [0, []], ifs: [0, []], bat: [0, null], procs: [0, null] };
+  const cached = async (k, ms, fn) => { if (Date.now() - cache[k][0] > ms) { try { cache[k] = [Date.now(), await fn()]; } catch (_) { cache[k] = [Date.now(), k === 'bat' ? null : []]; } } return cache[k][1]; };
 
   handle('get-system', async () => {
-    const out: any = { today: S.privacy.net ? db.today() : null, month: S.privacy.net ? db.month() : null, netOn: S.privacy.net, hwOn: S.privacy.hw, uptime: os.uptime() };
+    const out: any = { today: S.privacy.net ? db.today() : null, month: S.privacy.net ? db.month() : null, netOn: S.privacy.net, hwOn: S.privacy.hw, uptime: os.uptime(), quotaGB: S.quota.gb };
     if (!S.privacy.hw) return out;
     out.disks = (await cached('disks', 10000, () => si.fsSize())).filter((d) => d.size > 0).map((d) => ({ mount: d.mount, size: d.size, used: d.used, pct: d.use }));
     out.gpu = await cached('gpu', 15000, async () => (await si.graphics()).controllers.map((c) => ({ name: c.model, util: c.utilizationGpu ?? null, memUsed: c.memoryUsed ?? null, memTotal: c.memoryTotal ?? c.vram ?? null })));
     out.temp = M.temp;
-    try { const b = await si.battery(); out.battery = b && b.hasBattery ? { pct: b.percent, charging: b.isCharging } : null; } catch (_) { out.battery = null; }
+    out.battery = await cached('bat', 30000, async () => { const b = await si.battery(); return b && b.hasBattery ? { pct: b.percent, charging: b.isCharging } : null; }) || null;
     try { out.summary = db.hardwareSummary(24); } catch (_) {}
     return out;
   });
+  handle('trim-mem', async () => doTrim(false));
+  // 检查 NetPet 新版本：只在点击时访问 GitHub，一次请求，不下载
+  handle('check-self-update', async () => { const r = await selfupdate.check(app.getVersion()); S.lastSelfUpd = r; save('lastSelfUpd'); log(`检查新版本：${r.ok ? (r.newer ? '有新版本 ' + r.latest : '已是最新') : r.error}`); return r; });
+  handle('last-self-update', () => S.lastSelfUpd || null);
+  handle('open-release', () => { const u = selfupdate.safeReleaseUrl(S.lastSelfUpd && S.lastSelfUpd.url); shell.openExternal(u); return true; });
+  // 一键打包诊断信息：日志 + 版本/系统信息 + 开关状态。不含统计数据、连接记录、密码、VPN 路径和配置。
+  handle('export-diag', async () => {
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const r = await dialog.showSaveDialog(dash, { defaultPath: `netpet-diag-${stamp}.zip`, filters: [{ name: 'ZIP', extensions: ['zip'] }] });
+    if (r.canceled || !r.filePath) return { ok: false };
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'netpet-diag-'));
+    try {
+      const info = {
+        version: app.getVersion(), electron: process.versions.electron, os: `${os.type()} ${os.release()} ${os.arch()}`, cpus: os.cpus().length, memGB: +(os.totalmem() / 1073741824).toFixed(1),
+        uptimeH: Math.round(os.uptime() / 3600), safe: SAFE, packaged: app.isPackaged, locale: app.getLocale(),
+        displays: screen.getAllDisplays().map((d) => ({ bounds: d.bounds, scale: d.scaleFactor })), gpu: app.getGPUFeatureStatus(),
+        db: { ...db.status(), path: undefined }, encAvailable: ENC.available, encFailed: ENC.failed,
+        settings: { privacy: S.privacy, compact: S.compact, alwaysOnTop: S.alwaysOnTop, retentionDays: S.retentionDays, memAlert: S.memAlert, memTrim: S.memTrim, quotaGB: S.quota.gb, remind: S.remind, newProcOn: S.newProc.on, hasLock: !!S.lock, vpnConfigured: !!(S.vpn.exe && S.vpn.config), pet: S.pet },
+        runtime: { ...R }, vpn: { state: vpn.status().state, error: vpn.status().error, tun: vpn.status().tun },
+        lastHealth: (() => { try { const h = db.lastHealth(); return h ? h.items.map((i) => ({ id: i.id, status: i.status, detail: i.detail })) : null; } catch (_) { return null; } })(),
+        lastTrim: S.lastTrim, lastUpdate: S.lastUpdateCheck ? { at: S.lastUpdateCheck.at, ok: S.lastUpdateCheck.ok, error: S.lastUpdateCheck.error, count: S.lastUpdateCheck.items?.length, pendingReboot: S.lastUpdateCheck.pendingReboot } : null
+      };
+      fs.writeFileSync(path.join(tmp, 'info.json'), JSON.stringify(info, null, 2));
+      const ld = path.join(userDir, 'logs');
+      for (const f of fs.existsSync(ld) ? fs.readdirSync(ld) : []) { try { fs.copyFileSync(path.join(ld, f), path.join(tmp, f)); } catch (_) {} }
+      fs.writeFileSync(path.join(tmp, 'README.txt'), '这是 NetPet 诊断包：info.json（版本、系统、开关状态）+ 日志。\r\n不包含：流量统计、连接记录、密码、VPN 程序/配置路径和内容。发送前可以自己打开检查。\r\n');
+      log('导出诊断包 → ' + r.filePath);
+      if (process.platform !== 'win32') { const dst = r.filePath.replace(/\.zip$/i, ''); fs.cpSync(tmp, dst, { recursive: true }); return { ok: true, path: dst }; }
+      const src = Buffer.from(path.join(tmp, '*'), 'utf8').toString('base64'), dst = Buffer.from(r.filePath, 'utf8').toString('base64');
+      const ok = await new Promise<boolean>((res) => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+        `$s=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${src}'));$d=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${dst}'));try{Compress-Archive -Path $s -DestinationPath $d -Force -ErrorAction Stop;'done'}catch{'fail'}`],
+        { windowsHide: true, timeout: 60000, encoding: 'utf8' }, (e, o) => res(!e && String(o).trim() === 'done')));
+      return ok ? { ok: true, path: r.filePath } : { ok: false, msg: '压缩失败' };
+    } finally { try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {} }
+  });
+  handle('last-trim', () => S.lastTrim || null);
   handle('get-processes', async () => {
     if (!S.privacy.proc) return { disabled: true };
-    const l = (await si.processes()).list.filter((x) => x.name).map((x) => ({ pid: x.pid, name: x.name, mem: x.memRss * 1024, cpu: x.cpu }));
+    const l = (await cached('procs', 10000, async () => (await si.processes()).list)).filter((x) => x.name).map((x) => ({ pid: x.pid, name: x.name, mem: x.memRss * 1024, cpu: x.cpu }));
     return { byMem: [...l].sort((a, b) => b.mem - a.mem).slice(0, 8), byCpu: [...l].sort((a, b) => b.cpu - a.cpu).slice(0, 8) };
   });
   handle('get-adapters', async () => {
@@ -419,7 +584,7 @@ function setupIpc() {
 
   handle('get-records', (a) => {
     const days = [1, 3, 7, 30].includes(a && a.days) ? a.days : 1;
-    const base = { today: db.today(), month: db.month(), connOn: S.privacy.conn };
+    const base = { today: S.privacy.net ? db.today() : null, month: S.privacy.net ? db.month() : null, connOn: S.privacy.conn };
     return S.privacy.conn ? { ...base, ...db.connections(days, str(a && a.q)) } : { ...base, rows: [], total: 0, byProc: [], byHost: [] };
   });
   handle('export-csv', async (a) => {
@@ -437,7 +602,7 @@ function setupIpc() {
     try { db.backup(r.filePath); return { ok: true, path: r.filePath }; } catch (e) { return { ok: false, msg: String(e.message || e) }; }
   });
   handle('open-data-dir', () => { shell.openPath(app.getPath('userData')); return true; });
-  handle('db-status', () => ({ ...db.status(), dataDir: app.getPath('userData') }));
+  handle('db-status', () => ({ ...db.status(), dataDir: app.getPath('userData'), encAvailable: ENC.available, encFailed: ENC.failed }));
 
   handle('run-security', async () => (S.privacy.health ? runHealth() : { disabled: true }));
   handle('last-security', () => db.lastHealth());
@@ -450,7 +615,7 @@ function setupIpc() {
   });
 
   handle('get-settings', () => ({
-    privacy: S.privacy, compact: S.compact, alwaysOnTop: S.alwaysOnTop, retentionDays: S.retentionDays, pet: S.pet, memAlert: S.memAlert, anim: S.anim,
+    privacy: S.privacy, memTrim: S.memTrim, quota: S.quota, remind: S.remind, newProc: { on: S.newProc.on, learnUntil: S.newProc.learnUntil, count: S.newProc.known.length }, compact: S.compact, alwaysOnTop: S.alwaysOnTop, retentionDays: S.retentionDays, pet: S.pet, memAlert: S.memAlert, anim: S.anim,
     autostart: app.getLoginItemSettings().openAtLogin, safe: SAFE, hasLock: !!S.lock, packaged: app.isPackaged, onboarded: S.onboarded, version: app.getVersion(), dataDir: app.getPath('userData')
   }));
   handle('set-settings', (p) => { applyPatch(p); return true; });
@@ -464,6 +629,50 @@ function setupIpc() {
     userHidden: R.userHidden, fsHidden: R.fsHidden, fullscreenHide: !!S.privacy.fullscreenHide,
     bounds: S.bounds, visible: !!(pet && !pet.isDestroyed() && pet.isVisible())
   }));
+  // 启动管理：只在用户打开这一页时读取，不保存、不上传；修改只改启用标记，可随时恢复
+  handle('list-startup', async () => startup.list());
+  handle('set-startup', async (a) => {
+    const id = str(a && a.id, 600); if (!id || typeof (a && a.enabled) !== 'boolean') return { ok: false, error: '参数不对' };
+    const r = await startup.setEnabled(id, a.enabled);
+    log(`启动项${a.enabled ? '启用' : '禁用'}：${id} → ${r.ok ? '成功' : '失败 ' + r.error}`);
+    return r;
+  });
+  handle('show-startup-file', async (a) => {
+    const id = str(a && a.id, 600); const cur = await startup.list();
+    const it = cur.items.find((x) => x.id === id);
+    if (!it || !it.exe || !path.isAbsolute(it.exe) || !fs.existsSync(it.exe)) return false;
+    shell.showItemInFolder(it.exe); return true;
+  });
+  handle('open-taskmgr-startup', () => { if (process.platform !== 'win32') return false; execFile('taskmgr.exe', ['/0', '/startup'], { windowsHide: false }, () => {}); return true; });
+  // 系统更新检测：只读；online=false 时只看本机状态，不联网
+  handle('check-updates', async (a) => {
+    const r = await winupdate.check(!!(a && a.online));
+    S.lastUpdateCheck = r; save('lastUpdateCheck');
+    if (r.ok && winupdate.verdict(r) === 'bad') notify('有重要的系统安全更新', '打开主面板 → 系统更新 查看，并在 Windows 更新里安装。');
+    log(`系统更新检测 online=${!!(a && a.online)} 可用=${r.items.length} 安全=${r.security} 待重启=${r.pendingReboot}${r.error ? ' 错误=' + r.error : ''}`);
+    return r;
+  });
+  handle('last-updates', () => S.lastUpdateCheck || null);
+  handle('open-winupdate', () => { if (process.platform !== 'win32') return false; shell.openExternal('ms-settings:windowsupdate'); return true; });
+  // sing-box VPN：路径只能通过主进程的文件对话框选择
+  handle('vpn-status', () => ({ ...vpn.status(), exe: S.vpn.exe, config: S.vpn.config, sysProxy: S.vpn.sysProxy, safe: SAFE }));
+  handle('vpn-pick', async (a) => {
+    const kind = a && a.kind === 'config' ? 'config' : 'exe';
+    const r = await dialog.showOpenDialog(dash, kind === 'exe'
+      ? { title: '选择 sing-box.exe', properties: ['openFile'], filters: [{ name: 'sing-box', extensions: ['exe'] }] }
+      : { title: '选择 sing-box 配置文件', properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] });
+    if (r.canceled || !r.filePaths[0]) return { ok: false };
+    const f = r.filePaths[0];
+    if (kind === 'exe' && !vpn.isSingBoxExe(f)) return { ok: false, error: '文件名需以 sing-box 开头（例如 sing-box.exe）。' };
+    if (vpn.running()) return { ok: false, error: '请先断开再更换。' };
+    S.vpn[kind] = f; save('vpn'); return { ok: true, path: f };
+  });
+  handle('vpn-set', (a) => { if (a && typeof a.sysProxy === 'boolean' && !vpn.running()) { S.vpn.sysProxy = a.sysProxy; save('vpn'); } return true; });
+  handle('vpn-start', async () => {
+    if (SAFE) return { ok: false, error: '安全模式下不启动 VPN。' };
+    return vpn.start({ exe: S.vpn.exe, config: S.vpn.config, sysProxy: S.vpn.sysProxy, workDir: path.join(userDir, 'sing-box') });
+  });
+  handle('vpn-stop', async () => { await vpn.stop(); return true; });
   handle('scan-junk', async () => cleaner.scanJunk({ netpetLogsDir: path.join(userDir, 'logs') }));
   handle('clean-junk', async (a) => {
     const ids = Array.isArray(a && a.ids) ? a.ids.filter((x: any) => typeof x === 'string') : [];
@@ -486,11 +695,16 @@ function setupIpc() {
   });
   const hash = (pw, salt) => crypto.scryptSync(pw, salt, 32).toString('hex');
   handle('lock-status', () => !!S.lock);
-  handle('unlock', (pw) => !!S.lock && hash(str(pw, 64), S.lock.salt) === S.lock.hash);
+  handle('unlock', (pw) => {
+    if (!S.lock) { unlocked = true; return true; }
+    const a = Buffer.from(hash(str(pw, 64), S.lock.salt), 'hex'), b = Buffer.from(S.lock.hash, 'hex');
+    unlocked = a.length === b.length && crypto.timingSafeEqual(a, b);
+    return unlocked;
+  });
   handle('set-password', (pw) => {
     pw = str(pw, 64);
     if (!pw) S.lock = null; else { const salt = crypto.randomBytes(16).toString('hex'); S.lock = { salt, hash: hash(pw, salt) }; }
-    save('lock'); return !!S.lock;
+    save('lock'); unlocked = true; return !!S.lock;
   });
 }
 
@@ -505,6 +719,15 @@ app.whenReady().then(() => {
   log('数据库 ' + (st.ok ? '正常' : '不可用 ' + st.error) + (st.recovered ? '（已重建）' : ''));
   loadSettings(); fsm.setMuted(mutedList());
   if (st.ok) { try { db.prune(S.retentionDays); } catch (_) {} }
+  vpn.init({
+    log, getBackup: () => S.vpnProxyBackup || null, setBackup: (b) => { S.vpnProxyBackup = b; save('vpnProxyBackup'); },
+    onChange: () => {
+      refreshMenu(); const s = vpn.status(); send(dash, 'vpn', s);
+      if (s.state === 'error' && s.error) notify('VPN 已断开', s.error);
+      delete S.baselines.proxy; // 代理是 NetPet 自己改的，下次体检重新建立基线，不误报“代理被修改”
+    }
+  });
+  vpn.recoverProxy().catch(() => {});
   createPet(); createTray(); setupIpc();
   // 显示器变化（插拔/改分辨率/改缩放）时，把宠物拉回当前工作区；每 10 秒看门狗再检查一次。
   const onDisplayChanged = () => { log('显示器变化，检查宠物位置'); ensurePetVisible(); };
@@ -513,14 +736,19 @@ app.whenReady().then(() => {
   screen.on('display-metrics-changed', onDisplayChanged);
   watchTimer = setInterval(ensurePetVisible, 10000);
   powerMonitor.on('suspend', () => db.flush());
+  powerMonitor.on('shutdown', () => { try { db.flush(); save('growth'); } catch (_) {} });
   powerMonitor.on('resume', () => { skip = 3; fsm.reset(Date.now()); ensurePetVisible(); });
   if (S.privacy.fullscreenHide) onPrivacyChanged();
   if (process.platform === 'win32') netmon.ensure();
   loop(); connTimer = setInterval(connTick, 8000);
   if (S.privacy.health) setTimeout(() => { runHealth().catch(() => {}); }, 30000);
+  // 每 6 小时自动复查一次，问题解决后警示牌会自动消失
+  healthTimer = setInterval(() => { if (S.privacy.health && !R.paused) runHealth().catch(() => {}); }, 6 * 3600e3);
   if (!st.ok) dialog.showMessageBox({ type: 'warning', title: 'NetPet', message: '本地数据库不可用', detail: `设置和统计将无法保存。\n原因：${st.error}` });
   else if (st.recovered) dialog.showMessageBox({ type: 'warning', title: 'NetPet', message: '数据库文件已损坏，已自动重建', detail: '旧文件已保留（文件名含 .corrupt-），设置已恢复为默认值。' });
   if (!S.onboarded) openDashboard('pri');
+  // 安全模式是“粘住”的：启动时明确告诉用户一次，避免功能被静默关闭
+  else if (SAFE) { notify('NetPet 正在安全模式下运行', '3D、硬件监控等功能已暂时关闭。打开主面板顶部可一键退出安全模式。'); openDashboard(); }
   if (process.env.NETPET_TEST) (global as any).__np = { openDashboard, togglePanel, applyPatch, setRuntime, resetPet, ensurePetVisible, wins: () => ({ pet, dash, panel }), S: () => S, M, runHealth };
 });
 app.on('second-instance', () => { openDashboard(); });
@@ -530,7 +758,8 @@ app.on('child-process-gone', (_e, d) => log(`子进程退出 type=${d.type} reas
 app.on('before-quit', (e) => {
   if (quitDone) return;
   e.preventDefault(); quitDone = true; quitting = true;
-  clearTimeout(timer); clearInterval(connTimer); clearInterval(watchTimer); clearTimeout(petRecreateTimer);
+  clearTimeout(timer); clearInterval(connTimer); clearInterval(watchTimer); clearInterval(healthTimer); clearTimeout(petRecreateTimer); clearTimeout(resetTimer);
   save('growth'); fullscreen.stop(); netmon.stop(); security.killAll(); // 不留下任何后台子进程
-  stopCollector().finally(() => { db.close(); log('正常退出'); app.quit(); });
+  // 先断开 VPN 并恢复系统代理，再停采集进程
+  vpn.stop().catch(() => {}).finally(() => stopCollector().finally(() => { db.close(); log('正常退出'); app.quit(); }));
 });

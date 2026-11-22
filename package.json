@@ -1,6 +1,6 @@
 {
   "name": "netpet",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "NetPet - 桌面智能宠物：网速与电脑状态监控",
   "author": "NetPet",
   "main": "out/main.js",

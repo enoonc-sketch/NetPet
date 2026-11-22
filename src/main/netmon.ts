@@ -10,7 +10,7 @@ const SCRIPT = [
   '  $o=@{ t=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); phys=$phys; ifs=$a }',
   '  [Console]::Out.WriteLine(($o | ConvertTo-Json -Compress -Depth 4)); [Console]::Out.Flush()', '  Start-Sleep -Seconds 1', '}'
 ].join('\n');
-const VIRT = /loopback|vethernet|vmware|virtualbox|vbox|hyper-v|\btap\b|\btun\b|wintun|wireguard|tailscale|zerotier|clash|sing-?box|meta|bluetooth|pseudo|npcap|docker|wsl/i;
+const VIRT = /loopback|vethernet|vmware|virtualbox|vbox|hyper-v|\btap\b|\btun\b|wintun|wireguard|tailscale|zerotier|clash|sing-?box|sing-?tun|meta|bluetooth|pseudo|npcap|docker|wsl/i;
 
 let child: ChildProcess | null = null, buf = '', lastStart = 0;
 let prev: { t: number; m: Map<string, [number, number]> } | null = null;
