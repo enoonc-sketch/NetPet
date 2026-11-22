@@ -11,6 +11,6 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm install
-      - run: npm run dist
+      - run: npm run dist -- -p never
       - uses: actions/upload-artifact@v4
         with: { name: netpet-win, path: 'dist/*', if-no-files-found: error }
