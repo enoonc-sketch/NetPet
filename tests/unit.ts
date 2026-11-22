@@ -241,7 +241,9 @@ async function testCleaner() {
   const mk = (rel: string, size: number, mtime?: number) => { const p = path.join(base, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, Buffer.alloc(size)); if (mtime) fs.utimesSync(p, new Date(mtime), new Date(mtime)); return p; };
   const tmpRoot = path.join(base, 'a', 'b', 'Temp'); const cacheRoot = path.join(base, 'a', 'b', 'Cache'); const logsRoot = path.join(base, 'a', 'b', 'Logs');
   const OLD = Date.now() - 3 * 864e5;
-  mk('a/b/Temp/junk.tmp', 1000, OLD); mk('a/b/Temp/sub/old.log', 2000, OLD); mk('a/b/Temp/fresh.tmp', 7000); // fresh：刚生成的临时文件 mk('a/b/Cache/c1.dat', 3000);
+  mk('a/b/Temp/junk.tmp', 1000, OLD); mk('a/b/Temp/sub/old.log', 2000, OLD);
+  mk('a/b/Temp/fresh.tmp', 7000); // fresh：刚生成的临时文件
+  mk('a/b/Cache/c1.dat', 3000);
   const outside = mk('outside.txt', 4000);
   try { fs.symlinkSync(outside, path.join(tmpRoot, 'link.txt')); } catch (_) {}
   mk('a/b/Logs/old.log', 500, Date.now() - 40 * 864e5); mk('a/b/Logs/new.log', 600, Date.now());

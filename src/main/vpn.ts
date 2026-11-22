@@ -141,7 +141,7 @@ export async function start(o: { exe: string; config: string; sysProxy: boolean;
 }
 
 export function stop(): Promise<void> {
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     const me = child;
     if (!me) { restoreProxy().finally(() => { if (st.state !== 'error') set({ state: 'stopped' }); resolve(); }); return; }
     stopping = true;
