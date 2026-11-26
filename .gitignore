@@ -1,3 +1,27 @@
+# 依赖与构建产物
 node_modules/
-dist/
 out/
+dist/
+*.tsbuildinfo
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+.npm/
+.cache/
+*.tmp
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# 代码签名证书（绝不要提交）
+*.pfx
+*.p12
+*.cer
+.env
+.env.*

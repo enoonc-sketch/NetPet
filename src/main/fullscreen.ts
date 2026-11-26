@@ -20,9 +20,13 @@ const SCRIPT = 'Add-Type -TypeDefinition \'using System;using System.Runtime.Int
 
 function spawnChild() {
   if (process.platform !== 'win32' || child || !wanted) return;
+  buf = ''; // 重启后丢弃上一个子进程残留的半行输出
   child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(SCRIPT, 'utf16le').toString('base64')], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const me = child;
   child.stdout.on('data', (d: any) => {
+    if (child !== me) return;
     buf += d; let i;
+    if (buf.length > 100000) buf = buf.slice(-1000);
     while ((i = buf.indexOf('\n')) >= 0) {
       const n = Number(buf.slice(0, i).trim()); buf = buf.slice(i + 1);
       if (!Number.isFinite(n)) continue;
@@ -34,6 +38,7 @@ function spawnChild() {
     }
   });
   const dead = () => {
+    if (child !== me) return; // 已经被 stop() 或新进程替换：旧进程的退出事件不再处理（exit 和 error 可能先后各来一次）
     child = null;
     if (!wanted) return;
     // 子进程意外退出：不要把上一次的“隐藏”卡住——先恢复显示，再 5 秒后自动重启检测。

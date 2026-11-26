@@ -20,6 +20,9 @@ CREATE INDEX IF NOT EXISTS idx_hw_t ON hardware_statistics(t);
 CREATE TABLE IF NOT EXISTS system_health(id INTEGER PRIMARY KEY AUTOINCREMENT, t INTEGER NOT NULL, score INTEGER, report TEXT);
 CREATE TABLE IF NOT EXISTS warning_records(id INTEGER PRIMARY KEY AUTOINCREMENT, t INTEGER NOT NULL, level TEXT, title TEXT, detail TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS daily_counters(day TEXT NOT NULL, key TEXT NOT NULL, n REAL NOT NULL DEFAULT 0, PRIMARY KEY(day, key));
+CREATE TABLE IF NOT EXISTS weekly_summary(week TEXT PRIMARY KEY, t INTEGER NOT NULL, data TEXT);
+CREATE TABLE IF NOT EXISTS memtrim_runs(id INTEGER PRIMARY KEY AUTOINCREMENT, t INTEGER NOT NULL, data TEXT);
 `;
 
 function openDb() {
@@ -31,6 +34,8 @@ function openDb() {
   q.upTraffic = db.prepare('INSERT INTO network_statistics(day,rx,tx,peak_rx) VALUES(?,?,?,?) ON CONFLICT(day) DO UPDATE SET rx=rx+excluded.rx, tx=tx+excluded.tx, peak_rx=max(peak_rx,excluded.peak_rx)');
   q.insConn = db.prepare('INSERT INTO connection_records(t,proc,pid,ip,port,host,proto,note) VALUES(?,?,?,?,?,?,?,?)');
   q.setSet = db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value');
+  q.addCnt = db.prepare('INSERT INTO daily_counters(day,key,n) VALUES(?,?,?) ON CONFLICT(day,key) DO UPDATE SET n=n+excluded.n');
+  q.maxCnt = db.prepare('INSERT INTO daily_counters(day,key,n) VALUES(?,?,?) ON CONFLICT(day,key) DO UPDATE SET n=max(n,excluded.n)');
 }
 function init(d) {
   dir = d; fs.mkdirSync(dir, { recursive: true }); dbPath = path.join(dir, 'netpet.db');
@@ -58,10 +63,13 @@ function loadSettings() {
 function saveSettings(obj) { if (!db) return; tx(() => { for (const [k, v] of Object.entries(obj)) q.setSet.run(k, JSON.stringify(v ?? null)); }); }
 
 /* 流量（网卡总流量）*/
-function addTraffic(rx, txb) {
+/** rx/txb 是这次采样累计的字节数；rate 是这次的下载速度（字节/秒，用于“峰值”）。
+    旧版把“字节数”当速度记峰值，采样间隔大于 1 秒时峰值会被放大最多 5 倍（成就会被误解锁）。不传 rate 时沿用旧口径。 */
+function addTraffic(rx, txb, rate?: number) {
   const k = day();
   if (pend.day && pend.day !== k) flush();
-  pend.day = k; pend.rx += rx; pend.tx += txb; if (rx > pend.peak) pend.peak = rx;
+  const pk = rate == null ? rx : rate;
+  pend.day = k; pend.rx += rx; pend.tx += txb; if (pk > pend.peak) pend.peak = pk;
 }
 function flush() {
   if (!db || !pend.day || (!pend.rx && !pend.tx)) { pend = { day: pend.day, rx: 0, tx: 0, peak: 0 }; return; }
@@ -79,6 +87,17 @@ function month() {
   if (db) { const x = db.prepare("SELECT COALESCE(SUM(rx),0) rx, COALESCE(SUM(tx),0) tx FROM network_statistics WHERE day LIKE ?").get(p + '%'); r = { rx: x.rx, tx: x.tx }; }
   if (pend.day && pend.day.startsWith(p)) { r.rx += pend.rx; r.tx += pend.tx; }
   return r;
+}
+/** 最近 n 天（含今天）每天的网卡总流量，含尚未落盘的部分。按日期升序；没有数据的日子不返回（由 report.fillDays 补 0）。 */
+function daily(n = 7) {
+  const out: { day: string; rx: number; tx: number }[] = [];
+  const since = day(Date.now() - (Math.max(1, n) - 1) * 864e5);
+  if (db) for (const r of db.prepare('SELECT day,rx,tx FROM network_statistics WHERE day>=? ORDER BY day').all(since)) out.push({ day: r.day, rx: r.rx, tx: r.tx });
+  if (pend.day && pend.day >= since && (pend.rx || pend.tx)) {
+    const x = out.find((r) => r.day === pend.day);
+    if (x) { x.rx += pend.rx; x.tx += pend.tx; } else out.push({ day: pend.day, rx: pend.rx, tx: pend.tx });
+  }
+  return out;
 }
 function stats() {
   if (!db) return { total: 0, peakRx: 0, daysUsed: 0 };
@@ -127,18 +146,76 @@ function saveAdapters(list) {
   tx(() => { for (const a of list) up.run(a.name, a.type, a.speed, a.ip4, a.virtual ? 1 : 0, a.up ? 1 : 0, Date.now()); });
 }
 
+/* 1.5.0：按天计数（提醒次数、番茄钟、CPU 峰值），保留 400 天，体积很小 */
+function bump(key: string, n = 1, t = Date.now()) { if (db && Number.isFinite(n)) q.addCnt.run(day(t), key, n); }
+function maxCounter(key: string, v: number, t = Date.now()) { if (db && v != null && Number.isFinite(v)) q.maxCnt.run(day(t), key, v); }
+/** [fromDay, toDay] 内各计数的合计；以 Max 结尾的键取最大值。 */
+function counters(fromDay: string, toDay: string) {
+  const o: Record<string, number> = {}; if (!db) return o;
+  for (const r of db.prepare("SELECT key, SUM(n) s, MAX(n) m FROM daily_counters WHERE day>=? AND day<=? GROUP BY key").all(fromDay, toDay)) o[r.key] = /Max$/.test(r.key) ? r.m : r.s;
+  return o;
+}
+function counterTotal(key: string) { if (!db) return 0; return db.prepare('SELECT COALESCE(SUM(n),0) s FROM daily_counters WHERE key=?').get(key).s; }
+/** 最近 n 天（含今天）某个计数的每日值。 */
+function counterDays(key: string, n = 7) {
+  if (!db) return [];
+  return db.prepare('SELECT day, n FROM daily_counters WHERE key=? AND day>=? ORDER BY day').all(key, day(Date.now() - (Math.max(1, n) - 1) * 864e5)).map((r) => ({ day: r.day, n: r.n }));
+}
+/** [fromDay, toDay] 内每天的网卡总流量（含未落盘部分）。 */
+function dailyRange(fromDay: string, toDay: string) {
+  const out: { day: string; rx: number; tx: number }[] = [];
+  if (db) for (const r of db.prepare('SELECT day,rx,tx FROM network_statistics WHERE day>=? AND day<=? ORDER BY day').all(fromDay, toDay)) out.push({ day: r.day, rx: r.rx, tx: r.tx });
+  if (pend.day && pend.day >= fromDay && pend.day <= toDay && (pend.rx || pend.tx)) {
+    const x = out.find((r) => r.day === pend.day);
+    if (x) { x.rx += pend.rx; x.tx += pend.tx; } else out.push({ day: pend.day, rx: pend.rx, tx: pend.tx });
+  }
+  return out;
+}
+/** 1.5.0 硬件历史曲线：since 之后的原始每分钟样本（由 shared/series.bucketize 降采样）。 */
+function hardwareRows(since: number) {
+  if (!db) return [];
+  return db.prepare('SELECT t, cpu, mem_pct mem, temp FROM hardware_statistics WHERE t>=? ORDER BY t').all(since);
+}
+function cpuPeak(start: number, end: number) { if (!db) return null; const x = db.prepare('SELECT MAX(cpu) m FROM hardware_statistics WHERE t>=? AND t<?').get(start, end); return x && x.m != null ? x.m : null; }
+function healthRange(start: number, end: number) { if (!db) return []; return db.prepare('SELECT t, score FROM system_health WHERE t>=? AND t<? ORDER BY t').all(start, end); }
+/* 1.5.0：每周小结（最多保留 60 份） */
+function saveWeekly(week: string, data: any) {
+  if (!db) return;
+  db.prepare('INSERT INTO weekly_summary(week,t,data) VALUES(?,?,?) ON CONFLICT(week) DO UPDATE SET t=excluded.t, data=excluded.data').run(week, Date.now(), JSON.stringify(data));
+  db.prepare('DELETE FROM weekly_summary WHERE week NOT IN (SELECT week FROM weekly_summary ORDER BY week DESC LIMIT 60)').run();
+}
+function weeklyList(limit = 60) {
+  if (!db) return [];
+  const out = [];
+  for (const r of db.prepare('SELECT data FROM weekly_summary ORDER BY week DESC LIMIT ?').all(limit)) { try { out.push(JSON.parse(r.data)); } catch (_) {} }
+  return out;
+}
+/* 1.5.0：运行内存整理记录（最近 20 次） */
+function addTrimRun(data: any) {
+  if (!db) return;
+  db.prepare('INSERT INTO memtrim_runs(t,data) VALUES(?,?)').run(Date.now(), JSON.stringify(data));
+  db.prepare('DELETE FROM memtrim_runs WHERE id NOT IN (SELECT id FROM memtrim_runs ORDER BY id DESC LIMIT 20)').run();
+}
+function trimRuns(limit = 20) {
+  if (!db) return [];
+  const out = [];
+  for (const r of db.prepare('SELECT data FROM memtrim_runs ORDER BY id DESC LIMIT ?').all(limit)) { try { out.push(JSON.parse(r.data)); } catch (_) {} }
+  return out;
+}
+
 /* 保留期限 / 清空 / 备份 */
 function prune(days) {
   if (!db) return;
   const t = Date.now() - days * 864e5;
   for (const tb of ['connection_records', 'hardware_statistics', 'system_health', 'warning_records']) db.prepare(`DELETE FROM ${tb} WHERE t<?`).run(t);
   db.prepare('DELETE FROM network_statistics WHERE day<?').run(day(Date.now() - 400 * 864e5));
+  db.prepare('DELETE FROM daily_counters WHERE day<?').run(day(Date.now() - 400 * 864e5));
 }
 function clearConnections() { if (db) db.exec('DELETE FROM connection_records'); }
 function clearAll() {
   if (!db) return;
   pend = { day: '', rx: 0, tx: 0, peak: 0 };
-  for (const tb of ['connection_records', 'hardware_statistics', 'system_health', 'warning_records', 'network_statistics', 'adapter_information']) db.exec(`DELETE FROM ${tb}`);
+  for (const tb of ['connection_records', 'hardware_statistics', 'system_health', 'warning_records', 'network_statistics', 'adapter_information', 'daily_counters', 'weekly_summary', 'memtrim_runs']) db.exec(`DELETE FROM ${tb}`);
   try { db.exec('VACUUM'); } catch (_) {}
 }
 function backup(file) {
@@ -147,4 +224,5 @@ function backup(file) {
   db.exec(`VACUUM INTO '${file.replace(/'/g, "''")}'`);
 }
 function close() { flush(); try { db && db.close(); } catch (_) {} db = null; }
-export { init, status, loadSettings, saveSettings, addTraffic, flush, today, month, stats, addConnections, connections, toCsv, addHardware, hardwareSummary, addHealth, lastHealth, addWarning, warnings, saveAdapters, prune, clearConnections, clearAll, backup, close };
+export { init, status, loadSettings, saveSettings, addTraffic, flush, today, month, daily, stats, addConnections, connections, toCsv, addHardware, hardwareSummary, addHealth, lastHealth, addWarning, warnings, saveAdapters, prune, clearConnections, clearAll, backup, close,
+  bump, maxCounter, counters, counterTotal, counterDays, dailyRange, hardwareRows, cpuPeak, healthRange, saveWeekly, weeklyList, addTrimRun, trimRuns };

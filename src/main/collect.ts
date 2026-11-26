@@ -6,7 +6,9 @@ import { log } from './logger';
 
 let cp: UtilityProcess | null = null;
 let seq = 0;
-const pending = new Map<number, { res: (v: any) => void; rej: (e: Error) => void; timer: NodeJS.Timeout }>();
+// owner：这个请求发给了哪一个采集进程。旧版某个进程退出时会把“所有”未完成请求都判失败，
+// 包括已经发给新进程的请求（超时重启后常见），导致一次超时连带一串误报。
+const pending = new Map<number, { res: (v: any) => void; rej: (e: Error) => void; timer: NodeJS.Timeout; owner: UtilityProcess }>();
 const fails: Record<string, number> = {};
 const blockedUntil: Record<string, number> = {};
 
@@ -25,7 +27,7 @@ function start() {
   });
   me.on('exit', () => {
     if (cp === me) cp = null;
-    for (const [id, p] of pending) { clearTimeout(p.timer); p.rej(new Error('采集进程已退出')); pending.delete(id); }
+    for (const [id, p] of pending) { if (p.owner !== me) continue; clearTimeout(p.timer); p.rej(new Error('采集进程已退出')); pending.delete(id); }
   });
   log('采集进程已启动 pid=' + me.pid);
 }
@@ -42,8 +44,8 @@ export function collect<T = any>(fn: string, timeout = 8000): Promise<T> {
       if (cp === me) { cp = null; killTree(me.pid); try { me.kill(); } catch (_) {} }
       rej(new Error('timeout'));
     }, timeout);
-    pending.set(id, { res: (v) => { fails[fn] = 0; res(v); }, rej, timer });
-    me.postMessage({ id, fn });
+    pending.set(id, { res: (v) => { fails[fn] = 0; res(v); }, rej, timer, owner: me });
+    try { me.postMessage({ id, fn }); } catch (e: any) { clearTimeout(timer); pending.delete(id); rej(new Error('采集进程不可用：' + ((e && e.message) || e))); }
   });
 }
 export function stopCollector(): Promise<void> {

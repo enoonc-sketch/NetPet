@@ -13,3 +13,5 @@ export class RateBudget {
 }
 /** 按真实间隔换算本次采样的字节数，间隔夹在 [0,5] 秒；首次按 1 秒。 */
 export function sampleSeconds(now: number, last: number): number { return last ? Math.min(5, Math.max(0, (now - last) / 1000)) : 1; }
+/** 本地时间的月份键 YYYY-MM（与 db.month() 的口径一致；旧版流量额度用 UTC 月份，东八区每月 1 日 0~8 点会错位并重复提醒）。 */
+export function localMonthKey(t = Date.now()): string { const d = new Date(t); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; }

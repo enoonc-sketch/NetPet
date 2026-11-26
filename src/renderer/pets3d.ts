@@ -1,6 +1,7 @@
 // NetPet 3D 宠物：全部用 three.js 基础几何体程序化搭建，不依赖任何模型文件。
 import * as THREE from 'three';
 import { PETS as LIST } from '../shared/petlist';
+import { paletteOf } from '../shared/wardrobe';
 
 const INK = '#3A2F3A', PINK = '#FF9DB0';
 const mat = (c: string, o?: any) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.55, metalness: 0, ...(o || {}) });
@@ -30,8 +31,47 @@ const SPEC = {
   robot: { body: '#B9C7E0', snout: 'none', tail: 'none', screen: '#2B3544', glow: 1, eyeC: '#5CF2FF', eyeX: 0.26, mouthC: '#5CF2FF', armC: '#7B8AA8', feet: '#7B8AA8', antenna: '#FF6B6B', bolts: '#7B8AA8', cheek: 0 }
 };
 
-function build(id) {
-  const s = SPEC[id] || SPEC.cat;
+/* 1.5.0：配饰（全部用基础几何体搭建）。top = 头顶高度，dim = 身体椭球三轴，eyes = 两只眼睛的位置。 */
+function addAccessory(core, acc, dim, eyes) {
+  const top = dim[1];
+  if (acc === 'hat') {
+    const g = new THREE.Group();
+    g.add(P(Y(0.42, 0.42, 0.04, INK), 0, 0, 0), P(Y(0.26, 0.28, 0.36, INK), 0, 0.2, 0), P(Y(0.285, 0.285, 0.07, PINK), 0, 0.06, 0));
+    g.position.set(0.05, top * 0.97, 0.02); g.rotation.z = -0.12; core.add(g);
+  } else if (acc === 'scarf') {
+    const r = dim[0] * Math.sqrt(Math.max(0.05, 1 - (0.32 / dim[1]) ** 2)) + 0.02;
+    const m = new THREE.Mesh(new THREE.TorusGeometry(r, 0.085, 10, 32), mat('#E5566D'));
+    m.rotation.x = Math.PI / 2; m.scale.y = dim[2] / dim[0]; m.position.y = -0.32; core.add(m);
+    core.add(P(S(0.11, '#E5566D', 0.9, 1.9, 0.5), 0.3, -0.5, dim[2] * 0.86, 0, 0, 0.25));
+  } else if (acc === 'glasses' && eyes.length === 2) {
+    const fm = mat(INK, { roughness: 0.3 });
+    for (const e of eyes) { const ring = new THREE.Mesh(new THREE.TorusGeometry(0.135, 0.022, 8, 24), fm); ring.position.set(e.x, e.y, e.z + 0.06); core.add(ring); }
+    const br = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, Math.abs(eyes[1].x - eyes[0].x) - 0.27, 8), fm);
+    br.rotation.z = Math.PI / 2; br.position.set((eyes[0].x + eyes[1].x) / 2, (eyes[0].y + eyes[1].y) / 2 + 0.03, (eyes[0].z + eyes[1].z) / 2 + 0.07); core.add(br);
+  } else if (acc === 'bow') {
+    const g = new THREE.Group(), c = '#FF6B9A';
+    g.add(P(C(0.13, 0.26, c), -0.13, 0, 0, 0, 0, Math.PI / 2), P(C(0.13, 0.26, c), 0.13, 0, 0, 0, 0, -Math.PI / 2), S(0.07, c));
+    g.position.set(dim[0] * 0.42, top * 0.86, 0.22); g.rotation.z = -0.35; core.add(g);
+  } else if (acc === 'flower') {
+    const g = new THREE.Group();
+    for (let i = 0; i < 5; i++) { const a = (i / 5) * Math.PI * 2; g.add(P(S(0.075, '#FFFFFF', 1, 1, 0.5), Math.cos(a) * 0.09, Math.sin(a) * 0.09, 0)); }
+    g.add(P(S(0.06, '#FFD36B', 1, 1, 0.6), 0, 0, 0.03));
+    g.position.set(-dim[0] * 0.45, top * 0.84, 0.25); g.rotation.y = -0.4; core.add(g);
+  } else if (acc === 'crown') {
+    const gold = mat('#FFD36B', { metalness: 0.4, roughness: 0.3, emissive: '#8A6A10', emissiveIntensity: 0.25 });
+    const g = new THREE.Group();
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.24, 0.14, 24, 1, true), gold); band.material.side = THREE.DoubleSide; g.add(band);
+    for (let i = 0; i < 5; i++) { const a = (i / 5) * Math.PI * 2; const sp = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.14, 8), gold); sp.position.set(Math.cos(a) * 0.25, 0.13, Math.sin(a) * 0.25); g.add(sp); }
+    g.add(P(S(0.04, '#E5566D'), 0, 0.02, 0.26));
+    g.position.set(0, top * 0.98 + 0.04, 0); core.add(g);
+  }
+}
+
+function build(id, look?) {
+  const base = SPEC[id] || SPEC.cat;
+  // 1.5.0 配色：只替换身体 / 肚皮（以及与身体同色的尾巴）颜色，其余造型不变
+  const pal = look ? paletteOf(look.palette) : null;
+  const s = pal && pal.body ? { ...base, body: pal.body, belly: base.belly ? pal.belly : base.belly, tailC: base.tailC && base.tailC === base.body ? pal.body : base.tailC, snoutC: base.snoutC && base.snoutC === base.belly ? pal.belly : base.snoutC } : base;
   const dim = s.dim || [0.95, 0.874, 0.9025];
   const surf = (x, y) => dim[2] * Math.sqrt(Math.max(0.05, 1 - (x / dim[0]) ** 2 - (y / dim[1]) ** 2));
   const root = new THREE.Group(), core = new THREE.Group();
@@ -68,7 +108,7 @@ function build(id) {
       g.position.set(d * eyeX, eyeY, ez);
     }
     g.scale.setScalar(s.eyeS || 1); g.userData.base = s.eyeS || 1;
-    core.add(g); A.eyes.push(g);
+    core.add(g); A.eyes.push(g); A.eyePos = (A.eyePos || []).concat([{ x: g.position.x, y: g.position.y, z: g.position.z }]);
   }
   if (s.patch) for (const d of s.patchBoth ? [-1, 1] : [1])
     core.add(P(S(0.17, s.patch, 1, 1.3, 0.5), d * 0.34, 0.12, surf(0.34, 0.12) - 0.02, 0, 0, d * 0.4));
@@ -153,6 +193,7 @@ function build(id) {
     core.add(P(S(0.13, '#FFFFFF', 1, 0.6, 0.4, { transparent: true, opacity: 0.7 }), -0.45, 0.42, surf(-0.45, 0.42) - 0.03));
     core.add(P(C(0.2, 0.42, s.body), 0, 0.82, 0.0, 0.2));
   }
+  if (look && look.acc && look.acc !== 'none') addAccessory(core, look.acc, dim, s.frog ? [] : (A.eyePos || []));
   return { root, core, A, tail: A.tail, ant: A.ant, dimY: dim[1], float: !!s.ghost, wobble: !!s.slime };
 }
 
@@ -164,7 +205,7 @@ const zTex = () => {
 
 // 场景 + 动画（不依赖 WebGL，方便测试）
 export class PetScene {
-  scene: any; state: any; eye: number; top: number; right: number; sweat: any; sign: any; zzz: any[]; fx: any[]; p: any; id: string; frame: any;
+  scene: any; state: any; eye: number; top: number; right: number; sweat: any; sign: any; zzz: any[]; fx: any[]; p: any; id: string; frame: any; look: any = null;
   constructor() {
     this.scene = new THREE.Scene();
     this.scene.add(new THREE.HemisphereLight('#FFFFFF', '#FFD9C8', 1.5));
@@ -184,7 +225,7 @@ export class PetScene {
   }
   setPet(id) {
     if (this.p) { this.scene.remove(this.p.root); this.p.root.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); }
-    this.id = id; this.p = build(id); this.scene.add(this.p.root); this.p.root.updateMatrixWorld(true);
+    this.id = id; this.p = build(id, this.look); this.scene.add(this.p.root); this.p.root.updateMatrixWorld(true);
     const b = new THREE.Box3().setFromObject(this.p.root);
     this.frame = { cy: (b.max.y + b.min.y) / 2, h: b.max.y - b.min.y, w: b.max.x - b.min.x };
     this.top = b.max.y; this.right = b.max.x;
@@ -253,15 +294,49 @@ export class Pet3D {
     this.cam.position.set(0, cy + 0.3, d); this.cam.lookAt(0, cy, 0);
   }
   setState(m, h, r) { this.ps.setState(m, h, r); }
+  /** 1.5.0：换装 / 配色。会按当前宠物重新搭建模型（旧模型的几何体和材质会被释放）。 */
+  setLook(look) { const k = JSON.stringify(look || null); if (k === JSON.stringify(this.ps.look)) return; this.ps.look = look ? { palette: look.palette, acc: look.acc } : null; if (this.ps.id) this.setPet(this.ps.id); }
   resize(w: number, h: number) { this.w = w; this.h = h; this.r.setSize(w, h); this.cam.aspect = w / h; this.cam.updateProjectionMatrix(); this.setPet(this.ps.id); }
   render() { this.r.render(this.ps.scene, this.cam); }
-  dispose() { cancelAnimationFrame(this.raf); this.r.dispose(); }
+  /** 释放 GPU 资源。旧版只释放渲染器，宠物模型的几何体/材质和“zzz”贴图一直留在显存里。 */
+  dispose(loseContext = false) {
+    cancelAnimationFrame(this.raf);
+    try {
+      this.ps.scene.traverse((o: any) => {
+        if (o.geometry) o.geometry.dispose();
+        const ms = o.material ? [].concat(o.material) : [];
+        for (const m of ms as any[]) { if (m.map) m.map.dispose(); m.dispose(); }
+      });
+    } catch (_) {}
+    if (loseContext) { try { this.r.forceContextLoss(); } catch (_) {} } // 一次性渲染（缩略图）用完立即归还 WebGL 上下文
+    this.r.dispose();
+  }
 }
 
+// 缩略图只生成一次并缓存：旧版每次打开“宠物”页都新建一个 WebGL 上下文且不归还，
+// 来回切换十几次后 Chromium 会报“上下文过多”并强制回收，缩略图变空白。
+let thumbCache: { size: number; list: any[] } | null = null;
 export function thumbnails(size = 112) {
+  if (thumbCache && thumbCache.size === size) return thumbCache.list;
   const canvas = document.createElement('canvas');
   const pet = new Pet3D(canvas, LIST[0].id, { w: size, h: size, preserve: true, static: true, pr: 2 });
   const out = [];
-  for (const it of LIST) { pet.setPet(it.id); pet.ps.update(0.4, 0.016); pet.render(); out.push({ ...it, url: canvas.toDataURL('image/png') }); }
-  pet.dispose(); return out;
+  try { for (const it of LIST) { pet.setPet(it.id); pet.ps.update(0.4, 0.016); pet.render(); out.push({ ...it, url: canvas.toDataURL('image/png') }); } }
+  finally { pet.dispose(true); }
+  thumbCache = { size, list: out };
+  return out;
+}
+/** 1.5.0：换装预览图（一次性渲染后立即归还 WebGL 上下文；按 宠物+外观 缓存最近 12 张）。 */
+const previewCache = new Map<string, string>();
+export function preview(id: string, look: any, size = 140) {
+  const k = `${id}|${look && look.palette}|${look && look.acc}|${size}`;
+  if (previewCache.has(k)) return previewCache.get(k)!;
+  const canvas = document.createElement('canvas');
+  const pet = new Pet3D(canvas, id, { w: size, h: size, preserve: true, static: true, pr: 2 });
+  let url = '';
+  try { pet.setLook(look); pet.ps.update(0.4, 0.016); pet.render(); url = canvas.toDataURL('image/png'); }
+  finally { pet.dispose(true); }
+  if (previewCache.size >= 12) previewCache.delete(previewCache.keys().next().value);
+  previewCache.set(k, url);
+  return url;
 }

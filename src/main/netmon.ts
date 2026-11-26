@@ -12,7 +12,7 @@ const SCRIPT = [
 ].join('\n');
 const VIRT = /loopback|vethernet|vmware|virtualbox|vbox|hyper-v|\btap\b|\btun\b|wintun|wireguard|tailscale|zerotier|clash|sing-?box|sing-?tun|meta|bluetooth|pseudo|npcap|docker|wsl/i;
 
-let child: ChildProcess | null = null, buf = '', lastStart = 0;
+let child: ChildProcess | null = null, buf = '', lastStart = 0, stopped = false;
 let prev: { t: number; m: Map<string, [number, number]> } | null = null;
 let cur: { rx: number; tx: number; at: number } | null = null;
 
@@ -33,14 +33,19 @@ function onLine(line: string) {
   prev = now;
 }
 export function ensure() {
-  if (process.platform !== 'win32' || child || Date.now() - lastStart < 10000) return;
-  lastStart = Date.now(); prev = null;
+  // stopped：退出流程里 stop() 之后，正在进行的 tick 再调用 rate() 时不能重新拉起 PowerShell（旧版会留下孤儿进程）
+  if (process.platform !== 'win32' || stopped || child || Date.now() - lastStart < 10000) return;
+  lastStart = Date.now(); prev = null; buf = '';
   child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(SCRIPT, 'utf16le').toString('base64')], { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
   const me = child;
-  me.stdout!.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (l) onLine(l); } });
+  me.stdout!.on('data', (d) => {
+    if (child !== me) return;
+    buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (l) onLine(l); }
+    if (buf.length > 1_000_000) buf = ''; // 异常输出（没有换行）时不让缓冲无限增长
+  });
   me.on('exit', () => { if (child === me) child = null; log('网速采集器已退出'); });
   me.on('error', (e) => { if (child === me) child = null; log('网速采集器启动失败 ' + e.message); });
   log('网速采集器已启动');
 }
 export function rate(): { rx: number; tx: number } | null { ensure(); return cur && Date.now() - cur.at < 5000 ? { rx: cur.rx, tx: cur.tx } : null; }
-export function stop() { if (child) { try { child.kill(); } catch (_) {} child = null; } }
+export function stop() { stopped = true; if (child) { try { child.kill(); } catch (_) {} child = null; } }

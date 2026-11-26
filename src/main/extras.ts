@@ -35,13 +35,14 @@ export class NewProcWatcher {
 export class Reminder {
   private sat = 0; private drank = 0; private lastNow: number | null = null;
   constructor(public sitMin = 0, public waterMin = 0, public idleResetSec = 300) {}
-  /** 每次调用传入当前时间和系统空闲秒数；muted（勿扰/全屏/暂停）时只计时不提醒。返回要提醒的类型。 */
-  tick(now: number, idleSec: number, muted: boolean): ('sit' | 'water')[] {
+  /** 每次调用传入当前时间和系统空闲秒数；muted（勿扰/全屏/暂停）时只计时不提醒。返回要提醒的类型。
+      1.5.0：muteSit = true（番茄钟专注中）时久坐提醒只计时不提醒，喝水提醒不受影响。 */
+  tick(now: number, idleSec: number, muted: boolean, muteSit = false): ('sit' | 'water')[] {
     const dt = this.lastNow == null ? 0 : Math.max(0, Math.min(120e3, now - this.lastNow)); this.lastNow = now;
     if (idleSec >= this.idleResetSec) { this.sat = 0; return []; }
     this.sat += dt; this.drank += dt;
     const out: ('sit' | 'water')[] = [];
-    if (this.sitMin > 0 && this.sat >= this.sitMin * 60e3) { if (!muted) out.push('sit'); this.sat = 0; }
+    if (this.sitMin > 0 && this.sat >= this.sitMin * 60e3) { if (!muted && !muteSit) out.push('sit'); this.sat = 0; }
     if (this.waterMin > 0 && this.drank >= this.waterMin * 60e3) { if (!muted) out.push('water'); this.drank = 0; }
     return out;
   }

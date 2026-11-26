@@ -46,6 +46,8 @@ async function defender() {
   const ev = `Get-MpComputerStatus：AntivirusEnabled=${d.AntivirusEnabled}，RealTimeProtectionEnabled=${d.RealTimeProtectionEnabled}，AMRunningMode=${d.AMRunningMode}，病毒库更新时间=${d.sig}`;
   if (!d.AntivirusEnabled || !d.RealTimeProtectionEnabled) return item('defender', T, 'bad', '实时保护已关闭。', ev, '在 Windows 安全中心 → 病毒和威胁防护 里重新打开实时保护。');
   const age = (Date.now() - new Date(d.sig).getTime()) / 864e5;
+  // 读不到病毒库时间时旧版 NaN > 7 为 false，会误报“病毒库是最新的”
+  if (!Number.isFinite(age)) return item('defender', T, 'ok', '实时保护已开启（读不到病毒库更新时间）。', ev, '可以在 Windows 安全中心 → 病毒和威胁防护 → 保护更新 里确认病毒库日期。');
   if (age > 7) return item('defender', T, 'warn', `实时保护已开启，但病毒库 ${Math.floor(age)} 天没更新。`, ev, '在 Windows 更新里检查更新，或在安全中心手动更新病毒库。');
   return item('defender', T, 'ok', '实时保护已开启，病毒库是最新的。', ev, '无需处理。');
 }
@@ -163,7 +165,11 @@ async function batteryHealth() {
 }
 async function run(si, ctx) {
   if (!isWin) return { items: [unk('os', '系统健康检查', '目前只支持 Windows')], score: null, at: Date.now() };
-  const [d, f, u, s, pt, px, dk, sm, bt] = await Promise.all([defender(), firewall(), update(), startup(), ports(si), proxy(ctx), disk(si), diskHealth(), batteryHealth()]);
+  // 每一项单独兜底：旧版任何一项抛异常（如 PowerShell 返回了意料之外的字段）都会让整次体检失败、界面一直“体检中”。
+  const safe = <T,>(p: Promise<T>, id: string, title: string): Promise<any> => p.catch(() => unk(id, title, '检查时出错'));
+  const [d, f, u, s, pt, px, dk, sm, bt] = await Promise.all([safe(defender(), 'defender', '病毒防护'), safe(firewall(), 'fw', 'Windows 防火墙'), safe(update(), 'upd', 'Windows 更新'),
+    safe(startup(), 'startup', '开机启动项'), ports(si).catch(() => [unk('ports', '本机监听端口', '检查时出错'), unk('conns', '当前网络连接', '检查时出错')]), safe(proxy(ctx), 'proxy', '系统代理设置'),
+    safe(disk(si), 'disk', '磁盘剩余空间'), safe(diskHealth(), 'smart', '硬盘健康（SMART）'), batteryHealth().catch(() => null)]);
   const items = [d, f, u, s, ...pt, hosts(ctx), px, dk, sm, ...(bt ? [bt] : []), resources(ctx)];
   let score = 100; for (const i of items) score -= i.status === 'bad' ? 20 : i.status === 'warn' ? 8 : 0;
   return { items, score: Math.max(0, score), at: Date.now() };

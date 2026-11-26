@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Pet3D } from '../pets3d';
 import { PETS } from '../../shared/petlist';
 import type { PState, Speed } from '../../shared/types';
+import { setLang } from '../../shared/i18n';
 
 const api = window.netpet;
 const fmt = (b: number | null) => (b == null ? '—' : b < 1024 ? Math.round(b) + ' B/s' : b < 1048576 ? (b / 1024).toFixed(0) + ' KB/s' : (b / 1048576).toFixed(1) + ' MB/s');
@@ -18,6 +19,8 @@ function App() {
   const [petId, setPetId] = useState('cat');
   const [compact, setCompact] = useState(false);
   const [has3d, setHas3d] = useState(false);
+  const [look, setLook] = useState<any>(null); // 1.5.0 换装 / 配色（只影响 3D，emoji 宠物不变）
+  const [, setLangTick] = useState(0);
   const canvas = useRef<HTMLCanvasElement>(null);
   const p3d = useRef<Pet3D | null>(null);
   const drag = useRef<{ sx: number; sy: number; moved: boolean } | null>(null);
@@ -26,11 +29,12 @@ function App() {
 
   useEffect(() => {
     api.on('speed', setSp); api.on('pstate', setPs);
-    api.on('settings', (s) => { if (s.pet) setPetId(s.pet); if (typeof s.compact === 'boolean') setCompact(s.compact); });
+    api.on('settings', (s) => { if (s.pet) setPetId(s.pet); if (typeof s.compact === 'boolean') setCompact(s.compact); if (s.look) setLook(s.look); if (s.lang) { setLang(s.lang); setLangTick((x) => x + 1); } });
+    api.invoke('get-lang').then((l) => { setLang(l); setLangTick((x) => x + 1); }).catch(() => {});
     api.invoke('get-pstate').then((p) => p && setPs(p)).catch(() => {});
     // 先问主进程是不是安全模式；安全模式下不创建 3D。3D 不可用时自动退回 emoji 宠物
     api.invoke('get-settings').then((s) => {
-      setPetId(s.pet); setCompact(!!s.compact);
+      setPetId(s.pet); setCompact(!!s.compact); if (s.look) setLook(s.look);
       if (!s.safe) { try { p3d.current = new Pet3D(canvas.current!, s.pet, s.compact ? { w: 80, h: 72 } : { w: 150, h: 130 }); setHas3d(true); } catch { p3d.current = null; setHas3d(false); } }
       requestAnimationFrame(() => api.send('pet-ready'));
     }).catch(() => api.send('pet-ready'));
@@ -61,6 +65,7 @@ function App() {
 
   const [mood, flag] = ps.paused ? (['sleep'] as [string]) : MAP[ps.state] || MAP.IDLE;
   useEffect(() => { p3d.current?.setPet(petId); }, [petId, has3d]);
+  useEffect(() => { try { p3d.current?.setLook(look); } catch (_) {} }, [look, has3d]);
   useEffect(() => { p3d.current?.resize(dims.w, dims.h); }, [compact, has3d]);
   useEffect(() => { p3d.current?.setState(mood, flag === 'hot', flag === 'risk'); }, [mood, flag, has3d]);
 
@@ -72,6 +77,7 @@ function App() {
       <div className="bubble">
         {compact ? <><b className="d">↓{short(sp.rx)}</b> <b className="u">↑{short(sp.tx)}</b></>
           : <><span className="d">↓ {fmt(sp.rx)}</span><br /><span className="u">↑ {fmt(sp.tx)}</span>{ps.label ? <div className="chip">{ps.label}</div> : null}</>}
+        {compact && ps.focus === 'focus' ? <b> 🍅</b> : null}
       </div>
       <canvas ref={canvas} className={'c3d' + (has3d ? '' : ' off')} />
       {!has3d && <div className={'emoji ' + cls}>{emoji}</div>}

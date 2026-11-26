@@ -1,11 +1,20 @@
-:root { --ink:#4A3B47; --mute:#8C7F8A; --line:#ECE6F2; --down:#3FBF9B; --up:#8E76E8; --peach:#FFC9A8; }
+:root { --ink:#4A3B47; --mute:#7D7079; --line:#ECE6F2; --down:#2FA886; --up:#7E66DC; --peach:#FFC9A8; --peach-ink:#4A3B47; --card:#fff; --soft:#FFF3EA; --focus:#7E66DC; }
+  @media (prefers-color-scheme: dark) { :root { --ink:#ECE6F2; --mute:#A79CB0; --line:#353042; --down:#4FD3AE; --up:#A792FF; --peach:#E9A27C; --peach-ink:#1D1A22; --card:#221F29; --soft:#2E2733; --focus:#A792FF; } }
   * { box-sizing:border-box; margin:0; padding:0; user-select:none; }
   html, body { background:transparent; overflow:hidden; }
   body { font-family:"Microsoft YaHei UI","PingFang SC",system-ui,sans-serif; color:var(--ink); font-size:13px; padding:4px; }
-  .card { background:#fff; border-radius:18px; padding:12px 14px; box-shadow:0 4px 18px rgba(74,59,71,.22); }
+  .card { background:var(--card); border-radius:18px; padding:12px 14px; box-shadow:0 4px 18px rgba(74,59,71,.22); }
   .row { display:flex; justify-content:space-between; align-items:baseline; }
   .big { font-size:19px; font-weight:800; } .d { color:var(--down); } .u { color:var(--up); } .mute { color:var(--mute); font-size:11px; }
   canvas { width:100%; height:56px; display:block; margin:6px 0; }
   .bar { height:7px; background:var(--line); border-radius:99px; overflow:hidden; margin:3px 0 7px; } .bar i { display:block; height:100%; background:var(--up); }
-  .st { display:inline-block; background:#FFF3EA; border-radius:99px; padding:2px 9px; font-size:11px; }
-  button { margin-top:8px; width:100%; border:0; background:var(--peach); color:var(--ink); border-radius:12px; padding:7px; font:inherit; font-weight:700; cursor:pointer; }
+  .st { display:inline-block; background:var(--soft); border-radius:99px; padding:2px 9px; font-size:11px; }
+  button { margin-top:8px; width:100%; border:0; background:var(--peach); color:var(--peach-ink); border-radius:12px; padding:7px; font:inherit; font-weight:700; cursor:pointer; }
+  button + button { margin-left:6px; }
+  button:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+  /* 1.5.0：番茄钟一行 */
+  .row.focus { align-items:center; margin-top:6px; padding-top:6px; border-top:1px dashed var(--line); }
+  .fbtn { display:flex; gap:4px; }
+  button.sm { width:auto; margin:0; padding:3px 9px; font-size:11px; border-radius:9px; }
+  button.sm + button.sm { margin-left:0; }
+  button.sm:disabled { opacity:.5; cursor:default; }

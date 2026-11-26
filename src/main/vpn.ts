@@ -62,6 +62,9 @@ export async function writeProxy(v: ProxyBackup): Promise<boolean> {
 
 /* ---------- 进程管理 ---------- */
 let child: ChildProcess | null = null, hooks: VpnHooks | null = null, stopping = false;
+// starting：正在检查配置/启动中，防止连点两次启动出两个 sing-box；gen：每次 stop() 加 1，
+// 启动流程每次 await 之后都核对一下，用户在“检查配置中”就点了断开时不再继续启动（旧版会在断开后又把它拉起来）。
+let starting = false, gen = 0;
 const ring = new Ring();
 const st = { state: 'stopped' as VpnState, error: '', startedAt: 0, proxyPort: 0, sysProxyOn: false, tun: false, pid: 0 };
 export function init(h: VpnHooks) { hooks = h; }
@@ -94,6 +97,13 @@ export function check(exe: string, cfgPath: string): Promise<{ ok: boolean; msg:
 
 export async function start(o: { exe: string; config: string; sysProxy: boolean; workDir: string }): Promise<{ ok: boolean; error?: string }> {
   if (child) return { ok: true };
+  if (starting) return { ok: false, error: '正在启动中，请稍候。' };
+  starting = true;
+  try { return await startInner(o); } finally { starting = false; }
+}
+async function startInner(o: { exe: string; config: string; sysProxy: boolean; workDir: string }): Promise<{ ok: boolean; error?: string }> {
+  const my = gen;
+  const cancelled = () => my !== gen;
   const fail = (e: string) => { set({ state: 'error', error: e }); return { ok: false, error: e }; };
   if (!o.exe || !fs.existsSync(o.exe) || !isSingBoxExe(o.exe)) return fail('请先选择 sing-box.exe（文件名需以 sing-box 开头）。');
   if (!o.config || !fs.existsSync(o.config)) return fail('请先选择 sing-box 配置文件（.json）。');
@@ -103,6 +113,7 @@ export async function start(o: { exe: string; config: string; sysProxy: boolean;
   if (!inb && !tun) return fail('配置里既没有 tun 入站，也没有 mixed/http 入站，连上也不会有流量经过它。');
   ring.clear(); set({ state: 'checking', error: '', tun });
   const c = await check(o.exe, o.config);
+  if (cancelled()) return { ok: false, error: '已取消连接。' };
   if (!c.ok) { ring.push(c.msg); return fail('配置检查没通过：' + c.msg.split('\n')[0]); }
   set({ state: 'starting' });
   try { fs.mkdirSync(o.workDir, { recursive: true }); } catch (_) {}
@@ -110,20 +121,26 @@ export async function start(o: { exe: string; config: string; sysProxy: boolean;
   const me = spawn(o.exe, ['run', '-c', o.config, '-D', o.workDir], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   child = me;
   me.stdout!.on('data', (d) => ring.push(String(d))); me.stderr!.on('data', (d) => ring.push(String(d)));
-  me.on('error', (e) => { ring.push('启动失败：' + e.message); });
-  me.on('exit', async (code) => {
+  // 'error'（如程序文件被删、无权限执行）之后 Node 不保证还会触发 'exit'；旧版此时 child 一直不为空，界面永远显示“已连接/启动中”。
+  let gone = false;
+  const onGone = async (code: number | null, err?: string) => {
+    if (gone) return; gone = true;
     if (child === me) child = null;
+    if (err) ring.push('启动失败：' + err);
     await restoreProxy();
     if (stopping) set({ state: 'stopped', pid: 0, proxyPort: 0 });
     else {
       const last = ring.all().slice(-3).join(' ');
       const hint = tun && /access|permission|denied|elevat|administrator/i.test(last) ? '（TUN 模式需要以管理员身份运行 NetPet）' : '';
-      set({ state: 'error', error: `sing-box 意外退出（代码 ${code}）${hint}`, pid: 0, proxyPort: 0 });
-      hooks && hooks.log('sing-box 意外退出 code=' + code);
+      set({ state: 'error', error: err ? `sing-box 无法启动：${err}` : `sing-box 意外退出（代码 ${code}）${hint}`, pid: 0, proxyPort: 0 });
+      hooks && hooks.log('sing-box 意外退出 code=' + code + (err ? ' error=' + err : ''));
     }
-  });
+  };
+  me.on('error', (e) => { onGone(null, e.message).catch(() => {}); });
+  me.on('exit', (code) => { onGone(code).catch(() => {}); });
   // 等 1.5 秒确认没有立即退出（端口被占用、TUN 权限不足等会马上退出）
   await new Promise((r) => setTimeout(r, 1500));
+  if (cancelled()) return { ok: false, error: '已取消连接。' };
   if (child !== me) return { ok: false, error: st.error || 'sing-box 启动后立即退出，请看下方日志。' };
   set({ state: 'running', startedAt: Date.now(), pid: me.pid || 0, proxyPort: inb ? inb.port : 0 });
   if (o.sysProxy && inb && isWin) {
@@ -134,20 +151,26 @@ export async function start(o: { exe: string; config: string; sysProxy: boolean;
       const ok = await writeProxy({ ProxyEnable: 1, ProxyServer: `127.0.0.1:${inb.port}`, ProxyOverride: BYPASS, AutoConfigURL: '' });
       set({ sysProxyOn: ok });
       if (!ok) { ring.push('设置系统代理失败。'); hooks!.setBackup(null); }
+      // 写代理期间 sing-box 已经退出（或用户点了断开）：退出处理当时 sysProxyOn 还是 false 没有恢复，这里补一次，
+      // 否则系统代理会一直指向已经不存在的端口，表现为“断开后上不了网”。
+      else if (child !== me) await restoreProxy();
     }
   }
+  if (child !== me) return { ok: false, error: st.error || 'sing-box 已退出。' };
   hooks && hooks.log(`sing-box 已启动 pid=${me.pid}${st.sysProxyOn ? ' 系统代理=127.0.0.1:' + inb!.port : ''}${tun ? ' TUN' : ''}`);
   return { ok: true };
 }
 
 export function stop(): Promise<void> {
+  gen++;
   return new Promise<void>((resolve) => {
     const me = child;
     if (!me) { restoreProxy().finally(() => { if (st.state !== 'error') set({ state: 'stopped' }); resolve(); }); return; }
     stopping = true;
     const t = setTimeout(() => { if (isWin && me.pid) execFile('taskkill', ['/pid', String(me.pid), '/T', '/F'], () => {}); }, 3000);
-    me.once('exit', () => { clearTimeout(t); setTimeout(resolve, 50); });
-    try { me.kill(); } catch (_) { clearTimeout(t); resolve(); }
+    const t2 = setTimeout(resolve, 6000); // 兜底：极少数情况下收不到 exit 事件，也不能让“断开”和退出流程一直卡住
+    me.once('exit', () => { clearTimeout(t); clearTimeout(t2); setTimeout(resolve, 50); });
+    try { me.kill(); } catch (_) { clearTimeout(t); clearTimeout(t2); resolve(); }
   }).then(() => restoreProxy()).then(() => { set({ state: 'stopped', error: '' }); });
 }
 export const running = () => !!child;

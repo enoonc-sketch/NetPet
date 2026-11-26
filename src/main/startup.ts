@@ -46,6 +46,14 @@ export function extractExe(cmd: string): string {
   return m ? m[0] : s.split(/\s+/)[0];
 }
 
+/** 展开命令里的 %VAR% 环境变量（如 %ProgramFiles%、%windir%），变量名大小写不敏感；不认识的变量原样保留。
+    旧版“位置”按钮对这类路径一律提示“找不到文件”。 */
+export function expandEnv(s: string, env: Record<string, string | undefined> = process.env): string {
+  const low: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env || {})) if (typeof v === 'string') low[k.toLowerCase()] = v;
+  return String(s || '').replace(/%([^%\\\/:*?"<>|\r\n]{1,64})%/g, (m, name) => (low[String(name).toLowerCase()] ?? m));
+}
+
 const LIST_PS = `
 $ErrorActionPreference='SilentlyContinue'
 [Console]::OutputEncoding=[Text.Encoding]::UTF8
@@ -75,7 +83,7 @@ export function toItems(raw: any[]): StartupItem[] {
     const bytes = x.ap ? [...Buffer.from(String(x.ap), 'base64')] : null;
     const command = String(x.cmd || '');
     return { id: `${x.src}|${x.name}`, src: x.src, srcName: s.name, scope: s.scope, name: String(x.name), command, enabled: parseApproved(bytes),
-      flagged: FLAG_RE.test(command), exe: extractExe(command), canToggle: s.scope === 'user' };
+      flagged: FLAG_RE.test(command), exe: expandEnv(extractExe(command)), canToggle: s.scope === 'user' };
   }).sort((a, b) => Number(a.scope === 'machine') - Number(b.scope === 'machine') || a.name.localeCompare(b.name));
 }
 
